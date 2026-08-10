@@ -1,0 +1,703 @@
+// ============================================================
+// ITSM PLATFORM - COMPLETE PRISMA SCHEMA
+// ============================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  PENDING
+  RESOLVED
+  CLOSED
+  ESCALATED
+}
+
+enum TicketPriority {
+  P1_CRITICAL
+  P2_HIGH
+  P3_MEDIUM
+  P4_LOW
+}
+
+enum TicketCategory {
+  NETWORK_CONNECTIVITY
+  HARDWARE_ISSUES
+  SOFTWARE_APPLICATION
+  ACCOUNT_ACCESS_IDENTITY
+  PRINTING_PROBLEMS
+  PRODUCTION_SYSTEMS
+}
+
+enum AssetStatus {
+  ACTIVE
+  INACTIVE
+  UNDER_MAINTENANCE
+  DISPOSED
+  LOST
+}
+
+enum AssetCategory {
+  LAPTOP
+  DESKTOP
+  SERVER
+  PRINTER
+  NETWORK_DEVICE
+  MOBILE_DEVICE
+  PERIPHERAL
+  SOFTWARE_LICENSE
+  OTHER
+}
+
+enum NotificationType {
+  TICKET_CREATED
+  TICKET_ASSIGNED
+  TICKET_UPDATED
+  TICKET_RESOLVED
+  TICKET_ESCALATED
+  SLA_WARNING
+  SLA_BREACH
+  COMMENT_ADDED
+  ASSET_ASSIGNED
+  SYSTEM_ALERT
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+}
+
+enum SyncStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CONFLICT
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  ACCESS
+  EXPORT
+  ESCALATE
+  ASSIGN
+  RESOLVE
+  CLOSE
+}
+
+enum ArticleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum RoutingRuleType {
+  CATEGORY_BASED
+  PRIORITY_BASED
+  KEYWORD_BASED
+  DEPARTMENT_BASED
+  WORKLOAD_BASED
+}
+
+// ============================================================
+// CORE USER & AUTH MODELS
+// ============================================================
+
+model User {
+  id                    String    @id @default(uuid())
+  email                 String    @unique
+  password              String
+  firstName             String
+  lastName              String
+  phone                 String?
+  avatarUrl             String?
+  employeeId            String?   @unique
+  status                UserStatus @default(PENDING_VERIFICATION)
+  emailVerified         Boolean   @default(false)
+  fcmToken              String?
+  lastLoginAt           DateTime?
+  lastActiveAt          DateTime?
+  failedLoginAttempts   Int       @default(0)
+  lockedUntil           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  // Relations
+  roleId                String
+  role                  Role      @relation(fields: [roleId], references: [id])
+  departmentId          String?
+  department            Department? @relation(fields: [departmentId], references: [id])
+
+  sessions              Session[]
+  passwordResetTokens   PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  createdTickets        Ticket[]  @relation("TicketCreator")
+  assignedTickets       Ticket[]  @relation("TicketAssignee")
+  ticketComments        TicketComment[]
+  ticketHistories       TicketHistory[]
+  assetAssignments      AssetAssignment[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  knowledgeArticles     KnowledgeArticle[]
+  articleRatings        ArticleRating[]
+  telemetryLogs         TelemetryLog[]
+  syncQueues            SyncQueue[]
+  devices               Device[]
+
+  @@index([email])
+  @@index([roleId])
+  @@index([departmentId])
+  @@index([status])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  displayName String
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  displayName String
+  description String?
+  resource    String
+  action      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  refreshToken String   @unique
+  userAgent    String?
+  ipAddress    String?
+  isValid      Boolean  @default(true)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@map("email_verification_tokens")
+}
+
+// ============================================================
+// ORGANIZATIONAL MODELS
+// ============================================================
+
+model Department {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  headId      String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  users       User[]
+  assets      Asset[]
+  tickets     Ticket[]
+
+  @@map("departments")
+}
+
+// ============================================================
+// TICKET MODELS
+// ============================================================
+
+model Ticket {
+  id              String          @id @default(uuid())
+  ticketNumber    String          @unique
+  title           String
+  description     String
+  status          TicketStatus    @default(OPEN)
+  priority        TicketPriority  @default(P3_MEDIUM)
+  category        TicketCategory
+  impact          String?
+  urgency         String?
+
+  // SLA tracking
+  slaResponseDue  DateTime?
+  slaResolutionDue DateTime?
+  slaResponseMet  Boolean?
+  slaResolutionMet Boolean?
+  slaBreached     Boolean         @default(false)
+  firstResponseAt DateTime?
+
+  // Timestamps
+  openedAt        DateTime        @default(now())
+  assignedAt      DateTime?
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  escalatedAt     DateTime?
+  lastActivityAt  DateTime        @default(now())
+
+  // Metadata
+  tags            String[]        @default([])
+  isPublic        Boolean         @default(false)
+  source          String          @default("portal")
+  offlineId       String?         @unique
+
+  // Soft delete
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  creatorId       String
+  creator         User            @relation("TicketCreator", fields: [creatorId], references: [id])
+  assigneeId      String?
+  assignee        User?           @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  departmentId    String?
+  department      Department?     @relation(fields: [departmentId], references: [id])
+
+  comments        TicketComment[]
+  attachments     TicketAttachment[]
+  history         TicketHistory[]
+  notifications   Notification[]
+  relatedArticles KnowledgeArticleTicket[]
+
+  @@index([ticketNumber])
+  @@index([status])
+  @@index([priority])
+  @@index([category])
+  @@index([creatorId])
+  @@index([assigneeId])
+  @@index([createdAt])
+  @@index([slaBreached])
+  @@map("tickets")
+}
+
+model TicketComment {
+  id          String   @id @default(uuid())
+  content     String
+  isInternal  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id])
+
+  attachments TicketAttachment[]
+
+  @@index([ticketId])
+  @@map("ticket_comments")
+}
+
+model TicketAttachment {
+  id          String   @id @default(uuid())
+  filename    String
+  originalName String
+  mimetype    String
+  size        Int
+  url         String
+  createdAt   DateTime @default(now())
+
+  ticketId    String?
+  ticket      Ticket?       @relation(fields: [ticketId], references: [id])
+  commentId   String?
+  comment     TicketComment? @relation(fields: [commentId], references: [id])
+  uploadedById String
+
+  @@index([ticketId])
+  @@map("ticket_attachments")
+}
+
+model TicketHistory {
+  id          String   @id @default(uuid())
+  field       String
+  oldValue    String?
+  newValue    String?
+  action      String
+  note        String?
+  createdAt   DateTime @default(now())
+
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  changedById String
+  changedBy   User     @relation(fields: [changedById], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_histories")
+}
+
+// ============================================================
+// SLA MODELS
+// ============================================================
+
+model SLAConfiguration {
+  id                    String          @id @default(uuid())
+  priority              TicketPriority  @unique
+  responseTimeMinutes   Int
+  resolutionTimeMinutes Int
+  warningThresholdPct   Int             @default(80)
+  isActive              Boolean         @default(true)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@map("sla_configurations")
+}
+
+// ============================================================
+// ROUTING MODELS
+// ============================================================
+
+model RoutingRule {
+  id            String          @id @default(uuid())
+  name          String
+  description   String?
+  ruleType      RoutingRuleType
+  priority      Int             @default(0)
+  isActive      Boolean         @default(true)
+  conditions    Json
+  assignTo      String?
+  departmentId  String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([ruleType])
+  @@index([isActive])
+  @@map("routing_rules")
+}
+
+// ============================================================
+// KNOWLEDGE BASE MODELS
+// ============================================================
+
+model KnowledgeArticle {
+  id          String        @id @default(uuid())
+  title       String
+  content     String
+  summary     String?
+  status      ArticleStatus @default(DRAFT)
+  category    String
+  tags        String[]      @default([])
+  viewCount   Int           @default(0)
+  helpfulCount Int          @default(0)
+  notHelpfulCount Int       @default(0)
+  isPublic    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  authorId    String
+  author      User          @relation(fields: [authorId], references: [id])
+
+  ratings     ArticleRating[]
+  relatedTickets KnowledgeArticleTicket[]
+
+  @@index([status])
+  @@index([category])
+  @@map("knowledge_articles")
+}
+
+model ArticleRating {
+  id        String   @id @default(uuid())
+  rating    Int
+  feedback  String?
+  createdAt DateTime @default(now())
+
+  articleId String
+  article   KnowledgeArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User             @relation(fields: [userId], references: [id])
+
+  @@unique([articleId, userId])
+  @@map("article_ratings")
+}
+
+model KnowledgeArticleTicket {
+  id        String   @id @default(uuid())
+  articleId String
+  article   KnowledgeArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([articleId, ticketId])
+  @@map("knowledge_article_tickets")
+}
+
+// ============================================================
+// ASSET MODELS
+// ============================================================
+
+model Asset {
+  id              String       @id @default(uuid())
+  assetTag        String       @unique
+  name            String
+  description     String?
+  category        AssetCategory
+  status          AssetStatus  @default(ACTIVE)
+  make            String?
+  model           String?
+  serialNumber    String?      @unique
+  purchaseDate    DateTime?
+  purchasePrice   Decimal?     @db.Decimal(10, 2)
+  warrantyExpiry  DateTime?
+  location        String?
+  specifications  Json?
+  notes           String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  departmentId    String?
+  department      Department?  @relation(fields: [departmentId], references: [id])
+
+  assignments     AssetAssignment[]
+
+  @@index([assetTag])
+  @@index([category])
+  @@index([status])
+  @@map("assets")
+}
+
+model AssetAssignment {
+  id          String    @id @default(uuid())
+  assignedAt  DateTime  @default(now())
+  returnedAt  DateTime?
+  notes       String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  assetId     String
+  asset       Asset     @relation(fields: [assetId], references: [id])
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  assignedById String
+
+  @@index([assetId])
+  @@index([userId])
+  @@map("asset_assignments")
+}
+
+// ============================================================
+// NOTIFICATION MODELS
+// ============================================================
+
+model Notification {
+  id          String              @id @default(uuid())
+  type        NotificationType
+  title       String
+  message     String
+  data        Json?
+  channel     NotificationChannel @default(IN_APP)
+  isRead      Boolean             @default(false)
+  readAt      DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime            @default(now())
+
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticketId    String?
+  ticket      Ticket?             @relation(fields: [ticketId], references: [id])
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ============================================================
+// TELEMETRY MODELS
+// ============================================================
+
+model Device {
+  id            String    @id @default(uuid())
+  deviceId      String    @unique
+  platform      String
+  model         String?
+  osVersion     String?
+  appVersion    String?
+  isActive      Boolean   @default(true)
+  lastSeenAt    DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  userId        String?
+  user          User?     @relation(fields: [userId], references: [id])
+
+  telemetryLogs TelemetryLog[]
+
+  @@index([deviceId])
+  @@map("devices")
+}
+
+model TelemetryLog {
+  id              String    @id @default(uuid())
+  deviceModel     String?
+  osVersion       String?
+  appVersion      String?
+  ramTotal        BigInt?
+  ramAvailable    BigInt?
+  cpuUsage        Float?
+  batteryLevel    Float?
+  storageTotal    BigInt?
+  storageAvailable BigInt?
+  networkStatus   String?
+  networkType     String?
+  crashLogs       Json?
+  errorLogs       Json?
+  healthScore     Float?
+  metadata        Json?
+  recordedAt      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+
+  deviceId        String?
+  device          Device?   @relation(fields: [deviceId], references: [id])
+  userId          String?
+  user            User?     @relation(fields: [userId], references: [id])
+
+  @@index([deviceId])
+  @@index([recordedAt])
+  @@map("telemetry_logs")
+}
+
+// ============================================================
+// SYNC MODELS
+// ============================================================
+
+model SyncQueue {
+  id            String      @id @default(uuid())
+  entityType    String
+  entityId      String?
+  operation     String
+  payload       Json
+  status        SyncStatus  @default(PENDING)
+  conflictData  Json?
+  retryCount    Int         @default(0)
+  maxRetries    Int         @default(3)
+  lastTriedAt   DateTime?
+  resolvedAt    DateTime?
+  errorMessage  String?
+  offlineId     String?
+  clientVersion Int?
+  serverVersion Int?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([entityType])
+  @@map("sync_queues")
+}
+
+// ============================================================
+// AUDIT MODELS
+// ============================================================
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  action      AuditAction
+  resource    String
+  resourceId  String?
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+
+  userId      String?
+  user        User?       @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([resource])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

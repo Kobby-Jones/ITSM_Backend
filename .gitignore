@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.npm
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Build & coverage
+coverage/
+dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Uploads (don't commit user uploads)
+uploads/
+!uploads/.gitkeep
+
+# Prisma generated files (regenerated on install)
+# Keep schema.prisma and seed.js, but not generated client
+# (if you bundle prisma client inside the repo, remove this line)
+# prisma/generated/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Test artifacts
+junit.xml
+test-results/

@@ -1,0 +1,35 @@
+# Dependencies — installed inside the image
+node_modules/
+npm-debug.log*
+
+# Environment files — injected at runtime
+.env
+.env.*
+!.env.example
+
+# Development-only files
+docker-compose.dev.yml
+Makefile
+.vscode/
+.idea/
+
+# Test artifacts
+__tests__/
+coverage/
+jest.config.js
+*.test.js
+
+# Logs
+logs/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs (optional — remove if you want docs in the image)
+README.md
