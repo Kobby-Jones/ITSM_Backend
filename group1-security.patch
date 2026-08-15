@@ -1,0 +1,1775 @@
+diff --git a/src/middleware/auth.middleware.js b/src/middleware/auth.middleware.js
+index dac5d2e..cb2d505 100644
+--- a/src/middleware/auth.middleware.js
++++ b/src/middleware/auth.middleware.js
+@@ -1,9 +1,13 @@
+ // src/middleware/auth.middleware.js
+ const { verifyAccessToken, extractBearerToken } = require('../utils/jwt');
+ const { prisma } = require('../config/database');
+-const { cacheGet, cacheSet } = require('../config/redis');
++const { cacheGet } = require('../config/redis');
+ const { AuthenticationError, AuthorizationError } = require('../shared/errors');
+ const { CACHE_KEYS } = require('../shared/constants');
++const {
++  AUTHENTICATED_USER_SELECT,
++  cacheAuthenticatedUser,
++} = require('../modules/users/user-cache');
+ 
+ async function authenticate(req, res, next) {
+   try {
+@@ -17,18 +21,14 @@ async function authenticate(req, res, next) {
+     if (isBlacklisted) throw new AuthenticationError('Token has been revoked');
+ 
+     // Try cache first
+-    let user = await cacheGet(CACHE_KEYS.USER(decoded.userId));
++    let user = await cacheGet(CACHE_KEYS.AUTH_USER(decoded.userId));
+ 
+     if (!user) {
+       user = await prisma.user.findUnique({
+         where: { id: decoded.userId, deletedAt: null },
+-        include: {
+-          role: {
+-            include: { permissions: { include: { permission: true } } },
+-          },
+-        },
++        select: AUTHENTICATED_USER_SELECT,
+       });
+-      if (user) await cacheSet(CACHE_KEYS.USER(decoded.userId), user, 300);
++      if (user) user = await cacheAuthenticatedUser(user);
+     }
+ 
+     if (!user) throw new AuthenticationError('User not found');
+@@ -64,6 +64,30 @@ function authorize(...permissions) {
+   };
+ }
+ 
++/**
++ * Allows a user to mutate their own resource, while requiring an explicit
++ * permission for mutations of another user's resource.
++ */
++function authorizeSelfOr(...permissions) {
++  return (req, res, next) => {
++    if (!req.user) return next(new AuthenticationError('Not authenticated'));
++    if (req.params.id === req.user.id) return next();
++
++    const userPermissions = req.user.role?.permissions?.map(
++      rolePermission => rolePermission.permission.name
++    ) || [];
++    const hasPermission = permissions.some(permission =>
++      userPermissions.includes(permission));
++
++    if (!hasPermission) {
++      return next(new AuthorizationError(
++        'You cannot update another user without an explicit user update permission'
++      ));
++    }
++    next();
++  };
++}
++
+ function requireRoles(...roleNames) {
+   return (req, res, next) => {
+     if (!req.user) return next(new AuthenticationError('Not authenticated'));
+@@ -82,7 +106,7 @@ function optionalAuth(req, res, next) {
+     const decoded = verifyAccessToken(token);
+     prisma.user.findUnique({
+       where: { id: decoded.userId, deletedAt: null },
+-      include: { role: { include: { permissions: { include: { permission: true } } } } },
++      select: AUTHENTICATED_USER_SELECT,
+     }).then(user => {
+       req.user = user;
+       next();
+@@ -92,4 +116,10 @@ function optionalAuth(req, res, next) {
+   }
+ }
+ 
+-module.exports = { authenticate, authorize, requireRoles, optionalAuth };
++module.exports = {
++  authenticate,
++  authorize,
++  authorizeSelfOr,
++  requireRoles,
++  optionalAuth,
++};
+diff --git a/src/middleware/upload.middleware.js b/src/middleware/upload.middleware.js
+index 56e4b8d..f724f83 100644
+--- a/src/middleware/upload.middleware.js
++++ b/src/middleware/upload.middleware.js
+@@ -8,50 +8,70 @@ const { AppError } = require('../shared/errors');
+ const uploadDir = process.env.UPLOAD_DIR || 'uploads';
+ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+ 
+-const SUBFOLDERS = { ticket: 'tickets', knowledge: 'knowledge', asset: 'assets', avatar: 'avatars' };
++const SUBFOLDERS = {
++  ticket: 'tickets',
++  knowledge: 'knowledge',
++  asset: 'assets',
++  avatar: 'avatars',
++};
+ 
+ const storage = multer.diskStorage({
+-  destination: (req, file, cb) => {
++  destination: (req, file, callback) => {
+     const folder = SUBFOLDERS[req.uploadType] || 'misc';
+-    const dest = path.join(uploadDir, folder);
+-    if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+-    cb(null, dest);
++    const destination = path.join(uploadDir, folder);
++    if (!fs.existsSync(destination)) {
++      fs.mkdirSync(destination, { recursive: true });
++    }
++    callback(null, destination);
+   },
+-  filename: (req, file, cb) => {
+-    const ext = path.extname(file.originalname).toLowerCase();
+-    cb(null, `${uuidv4()}${ext}`);
++  filename: (req, file, callback) => {
++    const extension = path.extname(file.originalname).toLowerCase();
++    callback(null, uuidv4() + extension);
+   },
+ });
+ 
+-const allowedTypes = (process.env.ALLOWED_FILE_TYPES || 'image/jpeg,image/png,image/gif,application/pdf').split(',');
++const allowedTypes = (
++  process.env.ALLOWED_FILE_TYPES
++  || 'image/jpeg,image/png,image/gif,application/pdf'
++).split(',');
+ 
+-const fileFilter = (req, file, cb) => {
++const fileFilter = (req, file, callback) => {
+   if (allowedTypes.includes(file.mimetype)) {
+-    cb(null, true);
++    callback(null, true);
+   } else {
+-    cb(new AppError(`File type ${file.mimetype} not allowed`, 400), false);
++    callback(
++      new AppError('File type ' + file.mimetype + ' not allowed', 400),
++      false
++    );
+   }
+ };
+ 
+ const upload = multer({
+   storage,
+   fileFilter,
+-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024 },
++  limits: {
++    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024,
++  },
+ });
+ 
+ function setUploadType(type) {
+-  return (req, res, next) => { req.uploadType = type; next(); };
++  return (req, res, next) => {
++    req.uploadType = type;
++    next();
++  };
+ }
+ 
+ function getFileUrl(req, file) {
+-  return `${req.protocol}://${req.get('host')}/${file.path.replace(/\\/g, '/')}`;
++  const folder = SUBFOLDERS[req.uploadType] || 'misc';
++  return req.protocol + '://' + req.get('host') + '/uploads/'
++    + folder + '/' + encodeURIComponent(file.filename);
+ }
+ 
+ function deleteFile(filePath) {
+   try {
+     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+-  } catch (err) {
+-    // Non-blocking
++  } catch {
++    // Cleanup is best effort. The caller's primary error must still be returned.
+   }
+ }
+ 
+diff --git a/src/modules/auth/auth.service.js b/src/modules/auth/auth.service.js
+index cd1909e..f12a83d 100644
+--- a/src/modules/auth/auth.service.js
++++ b/src/modules/auth/auth.service.js
+@@ -1,18 +1,20 @@
+ // src/modules/auth/auth.service.js
+ const bcrypt = require('bcryptjs');
+-const { v4: uuidv4 } = require('uuid');
+ const { prisma } = require('../../config/database');
+-const { cacheGet, cacheSet, cacheDel } = require('../../config/redis');
++const { cacheSet } = require('../../config/redis');
+ const { sendEmail, getEmailTemplate } = require('../../config/email');
+ const {
+   signAccessToken, signRefreshToken, signResetToken, signVerifyToken,
+   verifyRefreshToken, verifyResetToken, verifyEmailToken,
+ } = require('../../utils/jwt');
+ const {
+-  AuthenticationError, ConflictError, NotFoundError, ValidationError, AppError,
++  AuthenticationError, ConflictError, NotFoundError, AppError,
+ } = require('../../shared/errors');
+-const { CACHE_KEYS } = require('../../shared/constants');
+ const logger = require('../../config/logger');
++const {
++  cacheAuthenticatedUser,
++  invalidateUserCaches,
++} = require('../users/user-cache');
+ 
+ async function register(data) {
+   const { email, password, firstName, lastName, phone, employeeId, departmentId } = data;
+@@ -98,8 +100,9 @@ async function login(email, password, ipAddress, userAgent) {
+     data: { failedLoginAttempts: 0, lockedUntil: null, lastLoginAt: new Date() },
+   });
+ 
+-  // Cache user data
+-  await cacheSet(CACHE_KEYS.USER(user.id), user, 300);
++  // Cache only the strict authentication allow-list. Never cache the Prisma
++  // login record because it contains the password hash and lockout fields.
++  await cacheAuthenticatedUser(user);
+ 
+   const permissions = user.role.permissions.map(rp => rp.permission.name);
+ 
+@@ -153,7 +156,7 @@ async function logout(userId, token) {
+     data: { isValid: false },
+   });
+ 
+-  await cacheDel(CACHE_KEYS.USER(userId));
++  await invalidateUserCaches(userId);
+   logger.info(`User logged out: ${userId}`);
+ }
+ 
+@@ -196,7 +199,7 @@ async function resetPassword(token, newPassword) {
+     prisma.session.updateMany({ where: { userId: decoded.userId }, data: { isValid: false } }),
+   ]);
+ 
+-  await cacheDel(CACHE_KEYS.USER(decoded.userId));
++  await invalidateUserCaches(decoded.userId);
+   logger.info(`Password reset for user: ${decoded.userId}`);
+ }
+ 
+@@ -210,7 +213,7 @@ async function changePassword(userId, currentPassword, newPassword) {
+   const hashedPassword = await bcrypt.hash(newPassword, parseInt(process.env.BCRYPT_ROUNDS) || 12);
+   await prisma.user.update({ where: { id: userId }, data: { password: hashedPassword } });
+   await prisma.session.updateMany({ where: { userId }, data: { isValid: false } });
+-  await cacheDel(CACHE_KEYS.USER(userId));
++  await invalidateUserCaches(userId);
+ }
+ 
+ async function verifyEmail(token) {
+@@ -228,7 +231,7 @@ async function verifyEmail(token) {
+     prisma.emailVerificationToken.update({ where: { id: record.id }, data: { used: true } }),
+   ]);
+ 
+-  await cacheDel(CACHE_KEYS.USER(decoded.userId));
++  await invalidateUserCaches(decoded.userId);
+   logger.info(`Email verified for user: ${decoded.userId}`);
+ }
+ 
+diff --git a/src/modules/sla/sla.routes.js b/src/modules/sla/sla.routes.js
+index 9d7cf92..e09a527 100644
+--- a/src/modules/sla/sla.routes.js
++++ b/src/modules/sla/sla.routes.js
+@@ -6,6 +6,7 @@ const ApiResponse = require('../../shared/response');
+ const { authenticate, authorize } = require('../../middleware/auth.middleware');
+ const { validate } = require('../../middleware/index');
+ const { PERMISSIONS } = require('../../shared/constants');
++const { assertCanReadTicket } = require('../../policies/ticket.policy');
+ const Joi = require('joi');
+ 
+ /**
+@@ -61,10 +62,20 @@ router.put('/configurations/:priority',
+  *     summary: Get SLA status for a ticket
+  *     tags: [SLA]
+  */
+-router.get('/tickets/:id/status', async (req, res) => {
++router.get('/tickets/:id/status',
++  authorize(PERMISSIONS.TICKET_READ_OWN, PERMISSIONS.TICKET_READ_ALL),
++  async (req, res) => {
+   const { prisma } = require('../../config/database');
+-  const ticket = await prisma.ticket.findUnique({ where: { id: req.params.id } });
++  const ticket = await prisma.ticket.findUnique({
++    where: { id: req.params.id, deletedAt: null },
++  });
+   if (!ticket) return ApiResponse.notFound(res, { message: 'Ticket not found' });
++
++  const permissions = req.user?.role?.permissions?.map(
++    rolePermission => rolePermission.permission.name
++  ) || [];
++  assertCanReadTicket(ticket, req.user.id, permissions);
++
+   const status = await slaService.getSLAStatus(ticket);
+   ApiResponse.success(res, { data: status });
+ });
+diff --git a/src/modules/sync/sync.service.js b/src/modules/sync/sync.service.js
+index 86f318f..e4e272f 100644
+--- a/src/modules/sync/sync.service.js
++++ b/src/modules/sync/sync.service.js
+@@ -69,7 +69,13 @@ async function processSyncTicket(operation, payload, userId, userPermissions, of
+     }
+     case 'COMMENT': {
+       if (!payload.ticketId) throw new Error('Missing ticketId for COMMENT');
+-      return ticketsService.addComment(payload.ticketId, payload.content, userId, false);
++      return ticketsService.addComment(
++        payload.ticketId,
++        payload.content,
++        userId,
++        false,
++        userPermissions
++      );
+     }
+     default:
+       throw new Error(`Unsupported operation: ${operation}`);
+diff --git a/src/modules/telemetry/telemetry.routes.js b/src/modules/telemetry/telemetry.routes.js
+index df6a2bc..f2fd69f 100644
+--- a/src/modules/telemetry/telemetry.routes.js
++++ b/src/modules/telemetry/telemetry.routes.js
+@@ -8,6 +8,12 @@ const { validate } = require('../../middleware/index');
+ const { PERMISSIONS } = require('../../shared/constants');
+ const Joi = require('joi');
+ 
++function getUserPermissions(req) {
++  return req.user?.role?.permissions?.map(
++    rolePermission => rolePermission.permission.name
++  ) || [];
++}
++
+ /**
+  * @swagger
+  * tags:
+@@ -81,7 +87,11 @@ router.get('/analytics', authorize(PERMISSIONS.ANALYTICS_READ), async (req, res)
+  *     tags: [Telemetry]
+  */
+ router.get('/devices/:deviceId', async (req, res) => {
+-  const health = await telemetryService.getDeviceHealth(req.params.deviceId);
++  const health = await telemetryService.getDeviceHealth(
++    req.params.deviceId,
++    req.user.id,
++    getUserPermissions(req)
++  );
+   if (!health) return ApiResponse.notFound(res, { message: 'Device not found' });
+   ApiResponse.success(res, { data: health });
+ });
+@@ -94,12 +104,12 @@ router.get('/devices/:deviceId', async (req, res) => {
+  *     tags: [Telemetry]
+  */
+ router.get('/devices/:deviceId/logs', async (req, res) => {
+-  const device = await require('../../config/database').prisma.device.findUnique({
+-    where: { deviceId: req.params.deviceId },
+-  });
+-  if (!device) return ApiResponse.notFound(res, { message: 'Device not found' });
+-
+-  const result = await telemetryService.getDeviceTelemetry(device.id, req.query);
++  const result = await telemetryService.getDeviceTelemetry(
++    req.params.deviceId,
++    req.query,
++    req.user.id,
++    getUserPermissions(req)
++  );
+   ApiResponse.paginated(res, { data: result.logs, total: result.total, page: result.page, limit: result.limit });
+ });
+ 
+diff --git a/src/modules/telemetry/telemetry.service.js b/src/modules/telemetry/telemetry.service.js
+index 7b7d416..5ccef27 100644
+--- a/src/modules/telemetry/telemetry.service.js
++++ b/src/modules/telemetry/telemetry.service.js
+@@ -1,66 +1,93 @@
+ // src/modules/telemetry/telemetry.service.js
+ const { prisma } = require('../../config/database');
+ const { calculateHealthScore, getPagination } = require('../../utils/helpers');
++const { AuthorizationError, NotFoundError } = require('../../shared/errors');
++const { assertCanReadDevice } = require('../../policies/device.policy');
+ 
+ async function ingestTelemetry(data, userId) {
+   const { deviceId, deviceModel, osVersion, appVersion, ramTotal, ramAvailable, cpuUsage,
+     batteryLevel, storageTotal, storageAvailable, networkStatus, networkType,
+     crashLogs, errorLogs, metadata, recordedAt } = data;
+ 
+-  // Upsert device record
+-  let device = null;
+-  if (deviceId) {
+-    device = await prisma.device.upsert({
+-      where: { deviceId },
+-      update: {
+-        platform: data.platform || 'unknown',
+-        model: deviceModel,
+-        osVersion,
+-        appVersion,
+-        lastSeenAt: new Date(),
+-        userId,
+-      },
+-      create: {
+-        deviceId,
+-        platform: data.platform || 'unknown',
+-        model: deviceModel,
++  const healthScore = calculateHealthScore({ cpuUsage, ramAvailable, ramTotal, storageAvailable, storageTotal, batteryLevel });
++
++  return prisma.$transaction(async transaction => {
++    let device = null;
++
++    if (deviceId) {
++      const existingDevice = await transaction.device.findUnique({
++        where: { deviceId },
++        select: { id: true, userId: true },
++      });
++
++      // A public client-supplied device identifier must never transfer an
++      // existing device from one account to another.
++      if (existingDevice?.userId && existingDevice.userId !== userId) {
++        throw new AuthorizationError('This device is already registered to another user');
++      }
++
++      if (existingDevice) {
++        device = await transaction.device.update({
++          where: { id: existingDevice.id },
++          data: {
++            platform: data.platform || 'unknown',
++            model: deviceModel,
++            osVersion,
++            appVersion,
++            lastSeenAt: new Date(),
++            userId: existingDevice.userId || userId,
++          },
++        });
++      } else {
++        device = await transaction.device.create({
++          data: {
++            deviceId,
++            platform: data.platform || 'unknown',
++            model: deviceModel,
++            osVersion,
++            appVersion,
++            userId,
++          },
++        });
++      }
++    }
++
++    const log = await transaction.telemetryLog.create({
++      data: {
++        deviceModel,
+         osVersion,
+         appVersion,
++        ramTotal: ramTotal != null ? BigInt(ramTotal) : null,
++        ramAvailable: ramAvailable != null ? BigInt(ramAvailable) : null,
++        cpuUsage,
++        batteryLevel,
++        storageTotal: storageTotal != null ? BigInt(storageTotal) : null,
++        storageAvailable: storageAvailable != null ? BigInt(storageAvailable) : null,
++        networkStatus,
++        networkType,
++        crashLogs: crashLogs || null,
++        errorLogs: errorLogs || null,
++        healthScore,
++        metadata: metadata || null,
++        recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
++        deviceId: device?.id,
+         userId,
+       },
+     });
+-  }
+ 
+-  const healthScore = calculateHealthScore({ cpuUsage, ramAvailable, ramTotal, storageAvailable, storageTotal, batteryLevel });
+-
+-  const log = await prisma.telemetryLog.create({
+-    data: {
+-      deviceModel, osVersion, appVersion,
+-      ramTotal: ramTotal ? BigInt(ramTotal) : null,
+-      ramAvailable: ramAvailable ? BigInt(ramAvailable) : null,
+-      cpuUsage, batteryLevel,
+-      storageTotal: storageTotal ? BigInt(storageTotal) : null,
+-      storageAvailable: storageAvailable ? BigInt(storageAvailable) : null,
+-      networkStatus, networkType,
+-      crashLogs: crashLogs || null,
+-      errorLogs: errorLogs || null,
+-      healthScore,
+-      metadata: metadata || null,
+-      recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
+-      deviceId: device?.id,
+-      userId,
+-    },
++    return { id: log.id, healthScore, deviceId: device?.id };
+   });
+-
+-  return { id: log.id, healthScore, deviceId: device?.id };
+ }
+ 
+-async function getDeviceTelemetry(deviceId, query) {
++async function getDeviceTelemetry(deviceId, query, userId, userPermissions) {
++  const device = await prisma.device.findUnique({ where: { deviceId } });
++  if (!device) throw new NotFoundError('Device not found');
++  assertCanReadDevice(device, userId, userPermissions);
++
+   const { page, limit, skip } = getPagination(query);
+   const { from, to } = query;
+ 
+-  const where = {};
+-  if (deviceId) where.deviceId = deviceId;
++  const where = { deviceId: device.id };
+   if (from || to) {
+     where.recordedAt = {};
+     if (from) where.recordedAt.gte = new Date(from);
+@@ -85,13 +112,14 @@ async function getDeviceTelemetry(deviceId, query) {
+   return { logs, total, page, limit };
+ }
+ 
+-async function getDeviceHealth(deviceId) {
++async function getDeviceHealth(deviceId, userId, userPermissions) {
+   const device = await prisma.device.findUnique({
+     where: { deviceId },
+     include: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },
+   });
+ 
+   if (!device) return null;
++  assertCanReadDevice(device, userId, userPermissions);
+ 
+   const recentLog = await prisma.telemetryLog.findFirst({
+     where: { deviceId: device.id },
+@@ -106,9 +134,19 @@ async function getDeviceHealth(deviceId) {
+     _count: { id: true },
+   });
+ 
++  const safeRecentLog = recentLog ? {
++    ...recentLog,
++    ramTotal: recentLog.ramTotal != null ? Number(recentLog.ramTotal) : null,
++    ramAvailable: recentLog.ramAvailable != null ? Number(recentLog.ramAvailable) : null,
++    storageTotal: recentLog.storageTotal != null ? Number(recentLog.storageTotal) : null,
++    storageAvailable: recentLog.storageAvailable != null
++      ? Number(recentLog.storageAvailable)
++      : null,
++  } : null;
++
+   return {
+     device,
+-    latestLog: recentLog,
++    latestLog: safeRecentLog,
+     last24h: {
+       avgHealthScore: avgResult._avg.healthScore,
+       avgCpuUsage: avgResult._avg.cpuUsage,
+diff --git a/src/modules/tickets/tickets.controller.js b/src/modules/tickets/tickets.controller.js
+index 12812cf..ed1e06f 100644
+--- a/src/modules/tickets/tickets.controller.js
++++ b/src/modules/tickets/tickets.controller.js
+@@ -1,7 +1,7 @@
+ // src/modules/tickets/tickets.controller.js
+ const ticketsService = require('./tickets.service');
+ const ApiResponse = require('../../shared/response');
+-const { getFileUrl } = require('../../middleware/upload.middleware');
++const { deleteFile } = require('../../middleware/upload.middleware');
+ 
+ function getUserPermissions(req) {
+   return req.user?.role?.permissions?.map(rp => rp.permission.name) || [];
+@@ -53,35 +53,73 @@ async function addComment(req, res) {
+   const canInternal = perms.includes('ticket:update:all');
+   const comment = await ticketsService.addComment(
+     req.params.id, req.body.content, req.user.id,
+-    canInternal ? req.body.isInternal : false
++    canInternal ? req.body.isInternal : false,
++    perms
+   );
+   ApiResponse.created(res, { message: 'Comment added', data: comment });
+ }
+ 
+ async function deleteComment(req, res) {
+   const perms = getUserPermissions(req);
+-  await ticketsService.deleteComment(req.params.commentId, req.user.id, perms);
++  await ticketsService.deleteComment(
++    req.params.id,
++    req.params.commentId,
++    req.user.id,
++    perms
++  );
+   ApiResponse.success(res, { message: 'Comment deleted', data: {} });
+ }
+ 
+ async function uploadAttachment(req, res) {
+   if (!req.file) return ApiResponse.badRequest(res, { message: 'No file uploaded' });
+-  const attachment = await ticketsService.addAttachment(req.params.id, {
+-    filename: req.file.filename,
+-    originalName: req.file.originalname,
+-    mimetype: req.file.mimetype,
+-    size: req.file.size,
+-    url: getFileUrl(req, req.file),
+-  }, req.user.id);
+-  ApiResponse.created(res, { message: 'Attachment uploaded', data: attachment });
++  const perms = getUserPermissions(req);
++
++  try {
++    const attachment = await ticketsService.addAttachment(req.params.id, {
++      filename: req.file.filename,
++      originalName: req.file.originalname,
++      mimetype: req.file.mimetype,
++      size: req.file.size,
++    }, req.user.id, perms);
++    ApiResponse.created(res, { message: 'Attachment uploaded', data: attachment });
++  } catch (error) {
++    // Multer has already written the file. Remove it when authorization or the
++    // database operation fails so rejected uploads do not become orphan files.
++    deleteFile(req.file.path);
++    throw error;
++  }
++}
++
++async function downloadAttachment(req, res, next) {
++  try {
++    const perms = getUserPermissions(req);
++    const attachment = await ticketsService.getAttachmentForDownload(
++      req.params.id,
++      req.params.attachmentId,
++      req.user.id,
++      perms
++    );
++
++    res.download(attachment.filePath, attachment.originalName, error => {
++      if (error) next(error);
++    });
++  } catch (error) {
++    next(error);
++  }
+ }
+ 
+ async function getTicketHistory(req, res) {
+-  const history = await ticketsService.getTicketHistory(req.params.id);
++  const perms = getUserPermissions(req);
++  const history = await ticketsService.getTicketHistory(
++    req.params.id,
++    req.user.id,
++    perms
++  );
+   ApiResponse.success(res, { data: history });
+ }
+ 
+ module.exports = {
+   createTicket, getTickets, getTicketById, updateTicket, assignTicket,
+-  changeStatus, escalateTicket, addComment, deleteComment, uploadAttachment, getTicketHistory,
++  changeStatus, escalateTicket, addComment, deleteComment, uploadAttachment,
++  downloadAttachment, getTicketHistory,
+ };
+diff --git a/src/modules/tickets/tickets.routes.js b/src/modules/tickets/tickets.routes.js
+index 7c20482..69312ee 100644
+--- a/src/modules/tickets/tickets.routes.js
++++ b/src/modules/tickets/tickets.routes.js
+@@ -2,11 +2,11 @@
+ const express = require('express');
+ const router = express.Router();
+ const ctrl = require('./tickets.controller');
+-const validators = require('./tickets.controller'); // validators embedded in same file
+ const Joi = require('joi');
+ const { validate } = require('../../middleware/index');
+ const { authenticate, authorize } = require('../../middleware/auth.middleware');
+ const { upload, setUploadType } = require('../../middleware/upload.middleware');
++const { requireTicketAccess } = require('../../middleware/ticket-access.middleware');
+ const { PERMISSIONS } = require('../../shared/constants');
+ 
+ /**
+@@ -147,7 +147,10 @@ router.post('/:id/comments',
+  *     summary: Delete comment
+  *     tags: [Tickets]
+  */
+-router.delete('/:id/comments/:commentId', ctrl.deleteComment);
++router.delete('/:id/comments/:commentId',
++  authorize(PERMISSIONS.TICKET_READ_OWN, PERMISSIONS.TICKET_READ_ALL),
++  ctrl.deleteComment
++);
+ 
+ /**
+  * @swagger
+@@ -157,11 +160,25 @@ router.delete('/:id/comments/:commentId', ctrl.deleteComment);
+  *     tags: [Tickets]
+  */
+ router.post('/:id/attachments',
++  authorize(PERMISSIONS.TICKET_UPDATE_OWN, PERMISSIONS.TICKET_UPDATE_ALL),
++  requireTicketAccess('update'),
+   setUploadType('ticket'),
+   upload.single('file'),
+   ctrl.uploadAttachment
+ );
+ 
++/**
++ * @swagger
++ * /tickets/{id}/attachments/{attachmentId}/download:
++ *   get:
++ *     summary: Download an authorized ticket attachment
++ *     tags: [Tickets]
++ */
++router.get('/:id/attachments/:attachmentId/download',
++  authorize(PERMISSIONS.TICKET_READ_OWN, PERMISSIONS.TICKET_READ_ALL),
++  ctrl.downloadAttachment
++);
++
+ /**
+  * @swagger
+  * /tickets/{id}/history:
+@@ -170,7 +187,7 @@ router.post('/:id/attachments',
+  *     tags: [Tickets]
+  */
+ router.get('/:id/history',
+-  authorize(PERMISSIONS.TICKET_READ_ALL),
++  authorize(PERMISSIONS.TICKET_READ_OWN, PERMISSIONS.TICKET_READ_ALL),
+   ctrl.getTicketHistory
+ );
+ 
+diff --git a/src/modules/tickets/tickets.service.js b/src/modules/tickets/tickets.service.js
+index c5aab98..3e5d2bc 100644
+--- a/src/modules/tickets/tickets.service.js
++++ b/src/modules/tickets/tickets.service.js
+@@ -1,11 +1,18 @@
+ // src/modules/tickets/tickets.service.js
++const fs = require('fs');
++const path = require('path');
++const { v4: uuidv4 } = require('uuid');
+ const { prisma } = require('../../config/database');
+ const { NotFoundError, AppError, AuthorizationError } = require('../../shared/errors');
+ const { getPagination, buildOrderBy, generateTicketNumber, addMinutes } = require('../../utils/helpers');
+-const { TICKET_STATUS, PERMISSIONS } = require('../../shared/constants');
++const { PERMISSIONS } = require('../../shared/constants');
+ const routingEngine = require('../routing/routing.service');
+ const notificationService = require('../notifications/notifications.service');
+ const logger = require('../../config/logger');
++const {
++  assertCanReadTicket,
++  assertCanUpdateTicket,
++} = require('../../policies/ticket.policy');
+ 
+ const TICKET_INCLUDE = {
+   creator: { select: { id: true, firstName: true, lastName: true, email: true } },
+@@ -126,9 +133,7 @@ async function getTicketById(id, userId, userPermissions) {
+   if (!ticket) throw new NotFoundError('Ticket not found');
+ 
+   const canReadAll = userPermissions?.includes(PERMISSIONS.TICKET_READ_ALL);
+-  if (!canReadAll && ticket.creatorId !== userId) {
+-    throw new AuthorizationError('Access denied');
+-  }
++  assertCanReadTicket(ticket, userId, userPermissions);
+ 
+   // Filter internal comments for end users
+   if (!canReadAll) {
+@@ -143,11 +148,7 @@ async function updateTicket(id, data, userId, userPermissions) {
+   if (!ticket) throw new NotFoundError('Ticket not found');
+ 
+   const canUpdateAll = userPermissions?.includes(PERMISSIONS.TICKET_UPDATE_ALL);
+-  const canUpdateOwn = userPermissions?.includes(PERMISSIONS.TICKET_UPDATE_OWN);
+-
+-  if (!canUpdateAll && !(canUpdateOwn && ticket.creatorId === userId)) {
+-    throw new AuthorizationError('Cannot update this ticket');
+-  }
++  assertCanUpdateTicket(ticket, userId, userPermissions);
+ 
+   const allowedFields = canUpdateAll
+     ? ['title', 'description', 'priority', 'category', 'tags', 'impact', 'urgency', 'departmentId', 'isPublic']
+@@ -231,6 +232,7 @@ async function changeStatus(id, status, userId, note, userPermissions) {
+ 
+   const canUpdateAll = userPermissions?.includes(PERMISSIONS.TICKET_UPDATE_ALL);
+   const canClose = userPermissions?.includes(PERMISSIONS.TICKET_CLOSE);
++  assertCanUpdateTicket(ticket, userId, userPermissions);
+ 
+   // Validate state transitions
+   const transitions = {
+@@ -278,9 +280,17 @@ async function changeStatus(id, status, userId, note, userPermissions) {
+   return updated;
+ }
+ 
+-async function addComment(ticketId, content, authorId, isInternal = false, attachments = []) {
++async function addComment(
++  ticketId,
++  content,
++  authorId,
++  isInternal = false,
++  userPermissions = [],
++  attachments = []
++) {
+   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId, deletedAt: null } });
+   if (!ticket) throw new NotFoundError('Ticket not found');
++  assertCanReadTicket(ticket, authorId, userPermissions);
+ 
+   const comment = await prisma.ticketComment.create({
+     data: {
+@@ -302,8 +312,17 @@ async function addComment(ticketId, content, authorId, isInternal = false, attac
+   return comment;
+ }
+ 
+-async function deleteComment(commentId, userId, userPermissions) {
+-  const comment = await prisma.ticketComment.findUnique({ where: { id: commentId, deletedAt: null } });
++async function deleteComment(ticketId, commentId, userId, userPermissions) {
++  const ticket = await prisma.ticket.findUnique({
++    where: { id: ticketId, deletedAt: null },
++    select: { id: true, creatorId: true },
++  });
++  if (!ticket) throw new NotFoundError('Ticket not found');
++  assertCanReadTicket(ticket, userId, userPermissions);
++
++  const comment = await prisma.ticketComment.findFirst({
++    where: { id: commentId, ticketId, deletedAt: null },
++  });
+   if (!comment) throw new NotFoundError('Comment not found');
+ 
+   const canManage = userPermissions?.includes(PERMISSIONS.TICKET_UPDATE_ALL);
+@@ -312,11 +331,59 @@ async function deleteComment(commentId, userId, userPermissions) {
+   await prisma.ticketComment.update({ where: { id: commentId }, data: { deletedAt: new Date() } });
+ }
+ 
+-async function addAttachment(ticketId, fileData, uploaderId) {
++async function addAttachment(ticketId, fileData, uploaderId, userPermissions) {
+   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId, deletedAt: null } });
+   if (!ticket) throw new NotFoundError('Ticket not found');
++  assertCanUpdateTicket(ticket, uploaderId, userPermissions);
++
++  const attachmentId = uuidv4();
++  const apiVersion = process.env.API_VERSION || 'v1';
++  const url = '/api/' + apiVersion + '/tickets/' + ticketId
++    + '/attachments/' + attachmentId + '/download';
++
++  return prisma.ticketAttachment.create({
++    data: {
++      id: attachmentId,
++      ...fileData,
++      url,
++      ticketId,
++      uploadedById: uploaderId,
++    },
++  });
++}
++
++async function getAttachmentForDownload(
++  ticketId,
++  attachmentId,
++  userId,
++  userPermissions
++) {
++  const ticket = await prisma.ticket.findUnique({
++    where: { id: ticketId, deletedAt: null },
++    select: { id: true, creatorId: true },
++  });
++  if (!ticket) throw new NotFoundError('Ticket not found');
++  assertCanReadTicket(ticket, userId, userPermissions);
++
++  const attachment = await prisma.ticketAttachment.findFirst({
++    where: { id: attachmentId, ticketId },
++    select: {
++      id: true,
++      filename: true,
++      originalName: true,
++      mimetype: true,
++      size: true,
++    },
++  });
++  if (!attachment) throw new NotFoundError('Attachment not found');
++
++  const uploadRoot = path.resolve(process.env.UPLOAD_DIR || 'uploads', 'tickets');
++  const filePath = path.resolve(uploadRoot, attachment.filename);
++  if (path.dirname(filePath) !== uploadRoot || !fs.existsSync(filePath)) {
++    throw new NotFoundError('Attachment file not found');
++  }
+ 
+-  return prisma.ticketAttachment.create({ data: { ...fileData, ticketId, uploadedById: uploaderId } });
++  return { ...attachment, filePath };
+ }
+ 
+ async function escalateTicket(id, userId, note, userPermissions) {
+@@ -324,9 +391,13 @@ async function escalateTicket(id, userId, note, userPermissions) {
+   return changeStatus(id, 'ESCALATED', userId, note, userPermissions);
+ }
+ 
+-async function getTicketHistory(ticketId) {
+-  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
++async function getTicketHistory(ticketId, userId, userPermissions) {
++  const ticket = await prisma.ticket.findUnique({
++    where: { id: ticketId, deletedAt: null },
++    select: { id: true, creatorId: true },
++  });
+   if (!ticket) throw new NotFoundError('Ticket not found');
++  assertCanReadTicket(ticket, userId, userPermissions);
+ 
+   return prisma.ticketHistory.findMany({
+     where: { ticketId },
+@@ -337,5 +408,6 @@ async function getTicketHistory(ticketId) {
+ 
+ module.exports = {
+   createTicket, getTickets, getTicketById, updateTicket, assignTicket,
+-  changeStatus, addComment, deleteComment, addAttachment, escalateTicket, getTicketHistory,
++  changeStatus, addComment, deleteComment, addAttachment,
++  getAttachmentForDownload, escalateTicket, getTicketHistory,
+ };
+diff --git a/src/modules/users/users.controller.js b/src/modules/users/users.controller.js
+index 7446f17..a49da66 100644
+--- a/src/modules/users/users.controller.js
++++ b/src/modules/users/users.controller.js
+@@ -3,6 +3,12 @@ const usersService = require('./users.service');
+ const ApiResponse = require('../../shared/response');
+ const { getFileUrl } = require('../../middleware/upload.middleware');
+ 
++function getUserPermissions(req) {
++  return req.user?.role?.permissions?.map(
++    rolePermission => rolePermission.permission.name
++  ) || [];
++}
++
+ async function getUsers(req, res) {
+   const { users, total, page, limit } = await usersService.getUsers(req.query);
+   ApiResponse.paginated(res, { data: users, total, page, limit });
+@@ -14,7 +20,12 @@ async function getUserById(req, res) {
+ }
+ 
+ async function updateUser(req, res) {
+-  const user = await usersService.updateUser(req.params.id, req.body, req.user.id, req.user.role?.name);
++  const user = await usersService.updateUser(
++    req.params.id,
++    req.body,
++    req.user.id,
++    getUserPermissions(req)
++  );
+   ApiResponse.success(res, { message: 'User updated', data: user });
+ }
+ 
+diff --git a/src/modules/users/users.routes.js b/src/modules/users/users.routes.js
+index 7a9b54e..7df177a 100644
+--- a/src/modules/users/users.routes.js
++++ b/src/modules/users/users.routes.js
+@@ -2,10 +2,13 @@
+ const express = require('express');
+ const router = express.Router();
+ const ctrl = require('./users.controller');
+-const validators = require('./users.controller'); // validators in same file
+ const Joi = require('joi');
+ const { validate } = require('../../middleware/index');
+-const { authenticate, authorize } = require('../../middleware/auth.middleware');
++const {
++  authenticate,
++  authorize,
++  authorizeSelfOr,
++} = require('../../middleware/auth.middleware');
+ const { upload, setUploadType } = require('../../middleware/upload.middleware');
+ const { PERMISSIONS } = require('../../shared/constants');
+ 
+@@ -91,6 +94,7 @@ router.get('/:id', authorize(PERMISSIONS.USER_READ), ctrl.getUserById);
+  *     tags: [Users]
+  */
+ router.patch('/:id',
++  authorizeSelfOr(PERMISSIONS.USER_UPDATE),
+   validate(Joi.object({
+     firstName: Joi.string().min(2).max(50).trim(),
+     lastName: Joi.string().min(2).max(50).trim(),
+diff --git a/src/modules/users/users.service.js b/src/modules/users/users.service.js
+index f1e7288..7b37b49 100644
+--- a/src/modules/users/users.service.js
++++ b/src/modules/users/users.service.js
+@@ -1,10 +1,14 @@
+ // src/modules/users/users.service.js
+-const bcrypt = require('bcryptjs');
+ const { prisma } = require('../../config/database');
+-const { cacheDel, cacheGet, cacheSet } = require('../../config/redis');
+-const { NotFoundError, ConflictError, AppError } = require('../../shared/errors');
++const { cacheGet, cacheSet } = require('../../config/redis');
++const {
++  NotFoundError,
++  ConflictError,
++  AuthorizationError,
++} = require('../../shared/errors');
+ const { getPagination, buildOrderBy } = require('../../utils/helpers');
+-const { CACHE_KEYS } = require('../../shared/constants');
++const { CACHE_KEYS, PERMISSIONS } = require('../../shared/constants');
++const { invalidateUserCaches } = require('./user-cache');
+ 
+ const USER_SELECT = {
+   id: true, email: true, firstName: true, lastName: true, phone: true,
+@@ -42,7 +46,7 @@ async function getUsers(query) {
+ }
+ 
+ async function getUserById(id) {
+-  const cached = await cacheGet(CACHE_KEYS.USER(id));
++  const cached = await cacheGet(CACHE_KEYS.PUBLIC_USER(id));
+   if (cached) return cached;
+ 
+   const user = await prisma.user.findUnique({
+@@ -54,17 +58,18 @@ async function getUserById(id) {
+   });
+   if (!user) throw new NotFoundError('User not found');
+ 
+-  await cacheSet(CACHE_KEYS.USER(id), user, 300);
++  await cacheSet(CACHE_KEYS.PUBLIC_USER(id), user, 300);
+   return user;
+ }
+ 
+-async function updateUser(id, data, requesterId, requesterRole) {
++async function updateUser(id, data, requesterId, requesterPermissions) {
+   const user = await prisma.user.findUnique({ where: { id, deletedAt: null } });
+   if (!user) throw new NotFoundError('User not found');
+ 
+-  // Only admins can update other users
+-  if (id !== requesterId && !['super_admin', 'it_admin', 'it_manager'].includes(requesterRole)) {
+-    throw new AppError('Cannot update another user', 403);
++  const canUpdateOtherUsers = Array.isArray(requesterPermissions)
++    && requesterPermissions.includes(PERMISSIONS.USER_UPDATE);
++  if (id !== requesterId && !canUpdateOtherUsers) {
++    throw new AuthorizationError('Cannot update another user');
+   }
+ 
+   if (data.email && data.email !== user.email) {
+@@ -85,7 +90,7 @@ async function updateUser(id, data, requesterId, requesterRole) {
+     select: USER_SELECT,
+   });
+ 
+-  await cacheDel(CACHE_KEYS.USER(id));
++  await invalidateUserCaches(id);
+   return updated;
+ }
+ 
+@@ -98,7 +103,7 @@ async function updateUserRole(id, roleId) {
+   if (!role) throw new NotFoundError('Role not found');
+ 
+   const updated = await prisma.user.update({ where: { id }, data: { roleId }, select: USER_SELECT });
+-  await cacheDel(CACHE_KEYS.USER(id));
++  await invalidateUserCaches(id);
+   return updated;
+ }
+ 
+@@ -107,7 +112,7 @@ async function updateUserStatus(id, status) {
+   if (!user) throw new NotFoundError('User not found');
+ 
+   const updated = await prisma.user.update({ where: { id }, data: { status }, select: USER_SELECT });
+-  await cacheDel(CACHE_KEYS.USER(id));
++  await invalidateUserCaches(id);
+   return updated;
+ }
+ 
+@@ -117,18 +122,18 @@ async function softDeleteUser(id) {
+ 
+   await prisma.user.update({ where: { id }, data: { deletedAt: new Date(), status: 'INACTIVE' } });
+   await prisma.session.updateMany({ where: { userId: id }, data: { isValid: false } });
+-  await cacheDel(CACHE_KEYS.USER(id));
++  await invalidateUserCaches(id);
+ }
+ 
+ async function updateAvatar(id, avatarUrl) {
+   await prisma.user.update({ where: { id }, data: { avatarUrl } });
+-  await cacheDel(CACHE_KEYS.USER(id));
++  await invalidateUserCaches(id);
+   return { avatarUrl };
+ }
+ 
+ async function updateFcmToken(id, fcmToken) {
+   await prisma.user.update({ where: { id }, data: { fcmToken } });
+-  await cacheDel(CACHE_KEYS.USER(id));
++  await invalidateUserCaches(id);
+ }
+ 
+ async function getUserStats(id) {
+diff --git a/src/server.js b/src/server.js
+index a06c14d..5bc0078 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -70,8 +70,13 @@ app.use(compression());
+ app.use(requestLogger);
+ app.use(sanitize);
+ 
+-// Static file serving for uploads
+-app.use('/uploads', express.static(path.join(process.cwd(), process.env.UPLOAD_DIR || 'uploads')));
++// Only avatars are intentionally public. Ticket attachments are downloaded
++// through an authenticated, object-authorized API route.
++const uploadRoot = path.resolve(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
++app.use('/uploads/avatars', express.static(path.join(uploadRoot, 'avatars'), {
++  dotfiles: 'deny',
++  index: false,
++}));
+ 
+ // ============================================================
+ // RATE LIMITING
+diff --git a/src/shared/constants/index.js b/src/shared/constants/index.js
+index 899d92d..d1a9330 100644
+--- a/src/shared/constants/index.js
++++ b/src/shared/constants/index.js
+@@ -75,6 +75,12 @@ const SLA_CONFIG = {
+ };
+ 
+ const CACHE_KEYS = {
++  // Authentication and API response caches must never share a key. The
++  // authenticated shape contains permissions, while the public shape contains
++  // user profile/count data. Keeping them separate prevents shape confusion and
++  // accidental exposure of fields returned by a broader Prisma query.
++  AUTH_USER: (id) => 'auth:user:' + id,
++  PUBLIC_USER: (id) => 'public:user:' + id,
+   USER: (id) => `user:${id}`,
+   USER_PERMISSIONS: (id) => `user:perms:${id}`,
+   DASHBOARD: (userId) => `dashboard:${userId}`,
+diff --git a/__tests__/unit/security-policies.test.js b/__tests__/unit/security-policies.test.js
+new file mode 100644
+index 0000000..b553b3f
+--- /dev/null
++++ b/__tests__/unit/security-policies.test.js
+@@ -0,0 +1,121 @@
++// __tests__/unit/security-policies.test.js
++jest.mock('../../src/config/database', () => ({ prisma: {} }));
++jest.mock('../../src/config/redis', () => ({
++  cacheGet: jest.fn(),
++  cacheSet: jest.fn(),
++}));
++
++const { PERMISSIONS } = require('../../src/shared/constants');
++const {
++  canReadTicket,
++  canUpdateTicket,
++  assertCanReadTicket,
++} = require('../../src/policies/ticket.policy');
++const {
++  canReadDevice,
++  assertCanReadDevice,
++} = require('../../src/policies/device.policy');
++const { authorizeSelfOr } = require('../../src/middleware/auth.middleware');
++
++describe('object-level security policies', () => {
++  describe('ticket policy', () => {
++    const ticket = { id: 'ticket-1', creatorId: 'owner-1' };
++
++    it('allows read-own only for the creator', () => {
++      const permissions = [PERMISSIONS.TICKET_READ_OWN];
++      expect(canReadTicket(ticket, 'owner-1', permissions)).toBe(true);
++      expect(canReadTicket(ticket, 'other-1', permissions)).toBe(false);
++    });
++
++    it('allows read-all for a different user', () => {
++      expect(canReadTicket(
++        ticket,
++        'technician-1',
++        [PERMISSIONS.TICKET_READ_ALL]
++      )).toBe(true);
++    });
++
++    it('allows update-own only for the creator', () => {
++      const permissions = [PERMISSIONS.TICKET_UPDATE_OWN];
++      expect(canUpdateTicket(ticket, 'owner-1', permissions)).toBe(true);
++      expect(canUpdateTicket(ticket, 'other-1', permissions)).toBe(false);
++    });
++
++    it('throws a 403 authorization error for cross-user ticket access', () => {
++      expect(() => assertCanReadTicket(
++        ticket,
++        'other-1',
++        [PERMISSIONS.TICKET_READ_OWN]
++      )).toThrow(expect.objectContaining({ statusCode: 403 }));
++    });
++  });
++
++  describe('device policy', () => {
++    const device = { id: 'device-1', userId: 'owner-1' };
++
++    it('allows the registered owner', () => {
++      expect(canReadDevice(device, 'owner-1', [])).toBe(true);
++    });
++
++    it('allows a user with analytics permission', () => {
++      expect(canReadDevice(
++        device,
++        'manager-1',
++        [PERMISSIONS.ANALYTICS_READ]
++      )).toBe(true);
++    });
++
++    it('denies another ordinary user', () => {
++      expect(() => assertCanReadDevice(device, 'other-1', []))
++        .toThrow(expect.objectContaining({ statusCode: 403 }));
++    });
++  });
++
++  describe('self-or-permission middleware', () => {
++    function request(id, userId, permissions = []) {
++      return {
++        params: { id },
++        user: {
++          id: userId,
++          role: {
++            permissions: permissions.map(name => ({
++              permission: { name },
++            })),
++          },
++        },
++      };
++    }
++
++    it('allows users to update their own profile', () => {
++      const next = jest.fn();
++      authorizeSelfOr(PERMISSIONS.USER_UPDATE)(
++        request('user-1', 'user-1'),
++        {},
++        next
++      );
++      expect(next).toHaveBeenCalledWith();
++    });
++
++    it('denies updating another user without user:update', () => {
++      const next = jest.fn();
++      authorizeSelfOr(PERMISSIONS.USER_UPDATE)(
++        request('user-2', 'user-1'),
++        {},
++        next
++      );
++      expect(next).toHaveBeenCalledWith(
++        expect.objectContaining({ statusCode: 403 })
++      );
++    });
++
++    it('allows updating another user with user:update', () => {
++      const next = jest.fn();
++      authorizeSelfOr(PERMISSIONS.USER_UPDATE)(
++        request('user-2', 'admin-1', [PERMISSIONS.USER_UPDATE]),
++        {},
++        next
++      );
++      expect(next).toHaveBeenCalledWith();
++    });
++  });
++});
+diff --git a/__tests__/unit/telemetry-authorization.test.js b/__tests__/unit/telemetry-authorization.test.js
+new file mode 100644
+index 0000000..d4ec766
+--- /dev/null
++++ b/__tests__/unit/telemetry-authorization.test.js
+@@ -0,0 +1,106 @@
++// __tests__/unit/telemetry-authorization.test.js
++jest.mock('../../src/config/database', () => {
++  const transaction = {
++    device: {
++      findUnique: jest.fn(),
++      update: jest.fn(),
++      create: jest.fn(),
++    },
++    telemetryLog: {
++      create: jest.fn(),
++    },
++  };
++
++  return {
++    prisma: {
++      device: {
++        findUnique: jest.fn(),
++        findMany: jest.fn(),
++        count: jest.fn(),
++      },
++      telemetryLog: {
++        findMany: jest.fn(),
++        findFirst: jest.fn(),
++        count: jest.fn(),
++        aggregate: jest.fn(),
++      },
++      $transaction: jest.fn(callback => callback(transaction)),
++      __transaction: transaction,
++    },
++  };
++});
++
++const { prisma } = require('../../src/config/database');
++const telemetryService = require('../../src/modules/telemetry/telemetry.service');
++const { PERMISSIONS } = require('../../src/shared/constants');
++
++describe('telemetry object authorization', () => {
++  beforeEach(() => {
++    prisma.$transaction.mockImplementation(
++      callback => callback(prisma.__transaction)
++    );
++  });
++
++  it('does not transfer a registered device to a different user', async () => {
++    prisma.__transaction.device.findUnique.mockResolvedValue({
++      id: 'device-db-1',
++      userId: 'owner-1',
++    });
++
++    await expect(telemetryService.ingestTelemetry({
++      deviceId: 'public-device-id',
++      platform: 'android',
++    }, 'attacker-1')).rejects.toMatchObject({ statusCode: 403 });
++
++    expect(prisma.__transaction.device.update).not.toHaveBeenCalled();
++    expect(prisma.__transaction.telemetryLog.create).not.toHaveBeenCalled();
++  });
++
++  it('blocks a different ordinary user from device health', async () => {
++    prisma.device.findUnique.mockResolvedValue({
++      id: 'device-db-1',
++      deviceId: 'public-device-id',
++      userId: 'owner-1',
++    });
++
++    await expect(telemetryService.getDeviceHealth(
++      'public-device-id',
++      'attacker-1',
++      []
++    )).rejects.toMatchObject({ statusCode: 403 });
++
++    expect(prisma.telemetryLog.findFirst).not.toHaveBeenCalled();
++  });
++
++  it('allows analytics users and serializes BigInt health fields', async () => {
++    prisma.device.findUnique.mockResolvedValue({
++      id: 'device-db-1',
++      deviceId: 'public-device-id',
++      userId: 'owner-1',
++    });
++    prisma.telemetryLog.findFirst.mockResolvedValue({
++      id: 'log-1',
++      ramTotal: BigInt(16000000000),
++      ramAvailable: BigInt(8000000000),
++      storageTotal: BigInt(512000000000),
++      storageAvailable: BigInt(256000000000),
++    });
++    prisma.telemetryLog.aggregate.mockResolvedValue({
++      _avg: {
++        healthScore: 90,
++        cpuUsage: 20,
++        batteryLevel: 80,
++      },
++      _count: { id: 1 },
++    });
++
++    const result = await telemetryService.getDeviceHealth(
++      'public-device-id',
++      'manager-1',
++      [PERMISSIONS.ANALYTICS_READ]
++    );
++
++    expect(result.latestLog.ramTotal).toBe(16000000000);
++    expect(() => JSON.stringify(result)).not.toThrow();
++  });
++});
+diff --git a/__tests__/unit/ticket-authorization.test.js b/__tests__/unit/ticket-authorization.test.js
+new file mode 100644
+index 0000000..f300c4d
+--- /dev/null
++++ b/__tests__/unit/ticket-authorization.test.js
+@@ -0,0 +1,124 @@
++// __tests__/unit/ticket-authorization.test.js
++jest.mock('../../src/config/database', () => ({
++  prisma: {
++    ticket: {
++      findUnique: jest.fn(),
++      update: jest.fn(),
++    },
++    ticketComment: {
++      create: jest.fn(),
++      findFirst: jest.fn(),
++      update: jest.fn(),
++    },
++    ticketAttachment: {
++      create: jest.fn(),
++      findFirst: jest.fn(),
++    },
++    ticketHistory: {
++      create: jest.fn(),
++      findMany: jest.fn(),
++    },
++    sLAConfiguration: {
++      findUnique: jest.fn(),
++    },
++    user: {
++      findUnique: jest.fn(),
++    },
++    $transaction: jest.fn(),
++  },
++}));
++
++jest.mock('../../src/modules/routing/routing.service', () => ({
++  autoRouteTicket: jest.fn().mockResolvedValue(null),
++}));
++
++jest.mock('../../src/modules/notifications/notifications.service', () => ({
++  sendTicketNotification: jest.fn().mockResolvedValue({ success: true }),
++}));
++
++const { prisma } = require('../../src/config/database');
++const ticketsService = require('../../src/modules/tickets/tickets.service');
++const notificationService = require('../../src/modules/notifications/notifications.service');
++const { PERMISSIONS } = require('../../src/shared/constants');
++
++describe('ticket service object authorization', () => {
++  const otherUsersTicket = {
++    id: 'ticket-1',
++    creatorId: 'owner-1',
++    assigneeId: null,
++    status: 'OPEN',
++  };
++
++  beforeEach(() => {
++    prisma.ticket.findUnique.mockResolvedValue(otherUsersTicket);
++    notificationService.sendTicketNotification.mockResolvedValue({
++      success: true,
++    });
++  });
++
++  it('blocks an end user from changing another user ticket status', async () => {
++    await expect(ticketsService.changeStatus(
++      'ticket-1',
++      'IN_PROGRESS',
++      'attacker-1',
++      null,
++      [PERMISSIONS.TICKET_UPDATE_OWN]
++    )).rejects.toMatchObject({ statusCode: 403 });
++
++    expect(prisma.ticket.update).not.toHaveBeenCalled();
++  });
++
++  it('blocks an end user from commenting on another user ticket', async () => {
++    await expect(ticketsService.addComment(
++      'ticket-1',
++      'Unauthorized comment',
++      'attacker-1',
++      false,
++      [PERMISSIONS.TICKET_READ_OWN]
++    )).rejects.toMatchObject({ statusCode: 403 });
++
++    expect(prisma.ticketComment.create).not.toHaveBeenCalled();
++  });
++
++  it('blocks an end user from attaching a file to another user ticket', async () => {
++    await expect(ticketsService.addAttachment(
++      'ticket-1',
++      {
++        filename: 'safe-name.pdf',
++        originalName: 'report.pdf',
++        mimetype: 'application/pdf',
++        size: 100,
++      },
++      'attacker-1',
++      [PERMISSIONS.TICKET_UPDATE_OWN]
++    )).rejects.toMatchObject({ statusCode: 403 });
++
++    expect(prisma.ticketAttachment.create).not.toHaveBeenCalled();
++  });
++
++  it('blocks an end user from reading another user ticket history', async () => {
++    await expect(ticketsService.getTicketHistory(
++      'ticket-1',
++      'attacker-1',
++      [PERMISSIONS.TICKET_READ_OWN]
++    )).rejects.toMatchObject({ statusCode: 403 });
++
++    expect(prisma.ticketHistory.findMany).not.toHaveBeenCalled();
++  });
++
++  it('allows a user with update-all to change the status', async () => {
++    const updatedTicket = { ...otherUsersTicket, status: 'IN_PROGRESS' };
++    prisma.ticket.update.mockResolvedValue(updatedTicket);
++    prisma.ticketHistory.create.mockResolvedValue({ id: 'history-1' });
++
++    await expect(ticketsService.changeStatus(
++      'ticket-1',
++      'IN_PROGRESS',
++      'technician-1',
++      null,
++      [PERMISSIONS.TICKET_UPDATE_ALL]
++    )).resolves.toEqual(updatedTicket);
++
++    expect(prisma.ticket.update).toHaveBeenCalledTimes(1);
++  });
++});
+diff --git a/__tests__/unit/user-cache.test.js b/__tests__/unit/user-cache.test.js
+new file mode 100644
+index 0000000..57910c2
+--- /dev/null
++++ b/__tests__/unit/user-cache.test.js
+@@ -0,0 +1,67 @@
++// __tests__/unit/user-cache.test.js
++const {
++  AUTHENTICATED_USER_SELECT,
++  toAuthenticatedUser,
++} = require('../../src/modules/users/user-cache');
++
++describe('authenticated user cache safety', () => {
++  const databaseUser = {
++    id: 'user-1',
++    email: 'user@example.com',
++    password: 'bcrypt-password-hash',
++    failedLoginAttempts: 4,
++    lockedUntil: new Date(),
++    fcmToken: 'private-push-token',
++    firstName: 'Juliet',
++    lastName: 'Mensah',
++    status: 'ACTIVE',
++    emailVerified: true,
++    roleId: 'role-1',
++    departmentId: 'department-1',
++    role: {
++      id: 'role-1',
++      name: 'end_user',
++      displayName: 'End User',
++      permissions: [{
++        permission: {
++          id: 'permission-1',
++          name: 'ticket:read:own',
++          resource: 'ticket',
++          action: 'read:own',
++          description: 'not needed in cache',
++        },
++      }],
++    },
++    department: {
++      id: 'department-1',
++      name: 'Operations',
++      code: 'OPS',
++      description: 'not needed in cache',
++    },
++  };
++
++  it('uses a Prisma select that excludes sensitive fields', () => {
++    expect(AUTHENTICATED_USER_SELECT.password).toBeUndefined();
++    expect(AUTHENTICATED_USER_SELECT.failedLoginAttempts).toBeUndefined();
++    expect(AUTHENTICATED_USER_SELECT.lockedUntil).toBeUndefined();
++    expect(AUTHENTICATED_USER_SELECT.fcmToken).toBeUndefined();
++  });
++
++  it('creates an allow-listed cache object without secrets', () => {
++    const cachedUser = toAuthenticatedUser(databaseUser);
++    const serialized = JSON.stringify(cachedUser);
++
++    expect(cachedUser).not.toHaveProperty('password');
++    expect(cachedUser).not.toHaveProperty('failedLoginAttempts');
++    expect(cachedUser).not.toHaveProperty('lockedUntil');
++    expect(cachedUser).not.toHaveProperty('fcmToken');
++    expect(serialized).not.toContain('bcrypt-password-hash');
++    expect(serialized).not.toContain('private-push-token');
++    expect(cachedUser.role.permissions[0].permission).toEqual({
++      id: 'permission-1',
++      name: 'ticket:read:own',
++      resource: 'ticket',
++      action: 'read:own',
++    });
++  });
++});
+diff --git a/src/middleware/ticket-access.middleware.js b/src/middleware/ticket-access.middleware.js
+new file mode 100644
+index 0000000..e9a453d
+--- /dev/null
++++ b/src/middleware/ticket-access.middleware.js
+@@ -0,0 +1,43 @@
++// src/middleware/ticket-access.middleware.js
++const { prisma } = require('../config/database');
++const { NotFoundError } = require('../shared/errors');
++const {
++  assertCanReadTicket,
++  assertCanUpdateTicket,
++} = require('../policies/ticket.policy');
++
++function getPermissionNames(user) {
++  return user?.role?.permissions?.map(rolePermission =>
++    rolePermission.permission.name) || [];
++}
++
++/**
++ * Performs object-level ticket authorization before a later middleware can
++ * cause a side effect, such as writing an uploaded file to disk.
++ */
++function requireTicketAccess(access = 'read') {
++  return async (req, res, next) => {
++    try {
++      const ticket = await prisma.ticket.findUnique({
++        where: { id: req.params.id, deletedAt: null },
++        select: { id: true, creatorId: true, assigneeId: true, status: true },
++      });
++
++      if (!ticket) throw new NotFoundError('Ticket not found');
++
++      const permissions = getPermissionNames(req.user);
++      if (access === 'update') {
++        assertCanUpdateTicket(ticket, req.user.id, permissions);
++      } else {
++        assertCanReadTicket(ticket, req.user.id, permissions);
++      }
++
++      req.authorizedTicket = ticket;
++      next();
++    } catch (error) {
++      next(error);
++    }
++  };
++}
++
++module.exports = { requireTicketAccess, getPermissionNames };
+diff --git a/src/modules/users/user-cache.js b/src/modules/users/user-cache.js
+new file mode 100644
+index 0000000..313b7ae
+--- /dev/null
++++ b/src/modules/users/user-cache.js
+@@ -0,0 +1,120 @@
++// src/modules/users/user-cache.js
++const { cacheDel, cacheSet } = require('../../config/redis');
++const { CACHE_KEYS } = require('../../shared/constants');
++
++const AUTHENTICATED_USER_SELECT = {
++  id: true,
++  email: true,
++  firstName: true,
++  lastName: true,
++  phone: true,
++  avatarUrl: true,
++  employeeId: true,
++  status: true,
++  emailVerified: true,
++  lastLoginAt: true,
++  lastActiveAt: true,
++  createdAt: true,
++  updatedAt: true,
++  roleId: true,
++  departmentId: true,
++  role: {
++    select: {
++      id: true,
++      name: true,
++      displayName: true,
++      permissions: {
++        select: {
++          permission: {
++            select: {
++              id: true,
++              name: true,
++              resource: true,
++              action: true,
++            },
++          },
++        },
++      },
++    },
++  },
++  department: {
++    select: {
++      id: true,
++      name: true,
++      code: true,
++    },
++  },
++};
++
++/**
++ * Builds an allow-listed authentication cache object.
++ *
++ * Do not replace this with object spreading or a "remove password" operation.
++ * A strict allow-list ensures future sensitive User fields are private by
++ * default.
++ */
++function toAuthenticatedUser(user) {
++  if (!user) return null;
++
++  return {
++    id: user.id,
++    email: user.email,
++    firstName: user.firstName,
++    lastName: user.lastName,
++    phone: user.phone ?? null,
++    avatarUrl: user.avatarUrl ?? null,
++    employeeId: user.employeeId ?? null,
++    status: user.status,
++    emailVerified: Boolean(user.emailVerified),
++    lastLoginAt: user.lastLoginAt ?? null,
++    lastActiveAt: user.lastActiveAt ?? null,
++    createdAt: user.createdAt ?? null,
++    updatedAt: user.updatedAt ?? null,
++    roleId: user.roleId,
++    departmentId: user.departmentId ?? null,
++    role: user.role ? {
++      id: user.role.id,
++      name: user.role.name,
++      displayName: user.role.displayName,
++      permissions: (user.role.permissions || []).map(rolePermission => ({
++        permission: {
++          id: rolePermission.permission.id,
++          name: rolePermission.permission.name,
++          resource: rolePermission.permission.resource,
++          action: rolePermission.permission.action,
++        },
++      })),
++    } : null,
++    department: user.department ? {
++      id: user.department.id,
++      name: user.department.name,
++      code: user.department.code,
++    } : null,
++  };
++}
++
++async function cacheAuthenticatedUser(user, ttl = 300) {
++  const safeUser = toAuthenticatedUser(user);
++  if (!safeUser) return null;
++
++  // Remove a value produced by older releases before writing the safe key.
++  await cacheDel(CACHE_KEYS.USER(safeUser.id));
++  await cacheSet(CACHE_KEYS.AUTH_USER(safeUser.id), safeUser, ttl);
++  return safeUser;
++}
++
++async function invalidateUserCaches(userId) {
++  await Promise.all([
++    cacheDel(CACHE_KEYS.AUTH_USER(userId)),
++    cacheDel(CACHE_KEYS.PUBLIC_USER(userId)),
++    cacheDel(CACHE_KEYS.USER(userId)),
++    cacheDel(CACHE_KEYS.USER_PERMISSIONS(userId)),
++  ]);
++}
++
++module.exports = {
++  AUTHENTICATED_USER_SELECT,
++  toAuthenticatedUser,
++  cacheAuthenticatedUser,
++  invalidateUserCaches,
++};
+diff --git a/src/policies/device.policy.js b/src/policies/device.policy.js
+new file mode 100644
+index 0000000..80174df
+--- /dev/null
++++ b/src/policies/device.policy.js
+@@ -0,0 +1,18 @@
++// src/policies/device.policy.js
++const { AuthorizationError } = require('../shared/errors');
++const { PERMISSIONS } = require('../shared/constants');
++
++function canReadDevice(device, userId, permissionNames) {
++  if (!device || !userId) return false;
++  if (device.userId === userId) return true;
++  return Array.isArray(permissionNames)
++    && permissionNames.includes(PERMISSIONS.ANALYTICS_READ);
++}
++
++function assertCanReadDevice(device, userId, permissionNames) {
++  if (!canReadDevice(device, userId, permissionNames)) {
++    throw new AuthorizationError('You do not have access to this device');
++  }
++}
++
++module.exports = { canReadDevice, assertCanReadDevice };
+diff --git a/src/policies/ticket.policy.js b/src/policies/ticket.policy.js
+new file mode 100644
+index 0000000..0ffa2b9
+--- /dev/null
++++ b/src/policies/ticket.policy.js
+@@ -0,0 +1,41 @@
++// src/policies/ticket.policy.js
++const { AuthorizationError } = require('../shared/errors');
++const { PERMISSIONS } = require('../shared/constants');
++
++function hasPermission(permissionNames, permission) {
++  return Array.isArray(permissionNames) && permissionNames.includes(permission);
++}
++
++function canReadTicket(ticket, userId, permissionNames) {
++  if (!ticket || !userId) return false;
++  if (hasPermission(permissionNames, PERMISSIONS.TICKET_READ_ALL)) return true;
++  return hasPermission(permissionNames, PERMISSIONS.TICKET_READ_OWN)
++    && ticket.creatorId === userId;
++}
++
++function canUpdateTicket(ticket, userId, permissionNames) {
++  if (!ticket || !userId) return false;
++  if (hasPermission(permissionNames, PERMISSIONS.TICKET_UPDATE_ALL)) return true;
++  return hasPermission(permissionNames, PERMISSIONS.TICKET_UPDATE_OWN)
++    && ticket.creatorId === userId;
++}
++
++function assertCanReadTicket(ticket, userId, permissionNames) {
++  if (!canReadTicket(ticket, userId, permissionNames)) {
++    throw new AuthorizationError('You do not have access to this ticket');
++  }
++}
++
++function assertCanUpdateTicket(ticket, userId, permissionNames) {
++  if (!canUpdateTicket(ticket, userId, permissionNames)) {
++    throw new AuthorizationError('You cannot update this ticket');
++  }
++}
++
++module.exports = {
++  hasPermission,
++  canReadTicket,
++  canUpdateTicket,
++  assertCanReadTicket,
++  assertCanUpdateTicket,
++};

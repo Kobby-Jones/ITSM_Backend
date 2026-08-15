@@ -75,7 +75,13 @@ const SLA_CONFIG = {
 };
 
 const CACHE_KEYS = {
+  // Authentication and API response caches must never share a key.
+  AUTH_USER: (id) => 'auth:user:' + id,
+  PUBLIC_USER: (id) => 'public:user:' + id,
+
+  // Legacy key retained temporarily so older cached records can be removed.
   USER: (id) => `user:${id}`,
+
   USER_PERMISSIONS: (id) => `user:perms:${id}`,
   DASHBOARD: (userId) => `dashboard:${userId}`,
   ANALYTICS: (key) => `analytics:${key}`,
@@ -90,4 +96,13 @@ const PAGINATION = {
   MAX_LIMIT: 100,
 };
 
-module.exports = { ROLES, PERMISSIONS, TICKET_STATUS, TICKET_PRIORITY, TICKET_CATEGORY, SLA_CONFIG, CACHE_KEYS, PAGINATION };
+module.exports = {
+  ROLES,
+  PERMISSIONS,
+  TICKET_STATUS,
+  TICKET_PRIORITY,
+  TICKET_CATEGORY,
+  SLA_CONFIG,
+  CACHE_KEYS,
+  PAGINATION,
+};

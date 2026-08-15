@@ -1,13 +1,28 @@
 // src/modules/users/users.routes.js
 const express = require('express');
+const Joi = require('joi');
+
 const router = express.Router();
 const ctrl = require('./users.controller');
-const validators = require('./users.controller'); // validators in same file
-const Joi = require('joi');
-const { validate } = require('../../middleware/index');
-const { authenticate, authorize } = require('../../middleware/auth.middleware');
-const { upload, setUploadType } = require('../../middleware/upload.middleware');
-const { PERMISSIONS } = require('../../shared/constants');
+
+const {
+  validate,
+} = require('../../middleware/index');
+
+const {
+  authenticate,
+  authorize,
+  authorizeSelfOr,
+} = require('../../middleware/auth.middleware');
+
+const {
+  upload,
+  setUploadType,
+} = require('../../middleware/upload.middleware');
+
+const {
+  PERMISSIONS,
+} = require('../../shared/constants');
 
 /**
  * @swagger
@@ -16,47 +31,59 @@ const { PERMISSIONS } = require('../../shared/constants');
  *   description: User management
  */
 
-// All routes require authentication
 router.use(authenticate);
 
 /**
  * @swagger
  * /users:
  *   get:
- *     summary: Get all users (paginated)
+ *     summary: Get all users
  *     tags: [Users]
  */
-router.get('/', authorize(PERMISSIONS.USER_READ), ctrl.getUsers);
+router.get(
+  '/',
+  authorize(PERMISSIONS.USER_READ),
+  ctrl.getUsers
+);
 
 /**
  * @swagger
  * /users/technicians:
  *   get:
- *     summary: Get all technicians with workload
+ *     summary: Get technicians with workload
  *     tags: [Users]
  */
-router.get('/technicians', authorize(PERMISSIONS.TICKET_ASSIGN), ctrl.getTechnicians);
+router.get(
+  '/technicians',
+  authorize(PERMISSIONS.TICKET_ASSIGN),
+  ctrl.getTechnicians
+);
 
 /**
  * @swagger
  * /users/me/stats:
  *   get:
- *     summary: Get own stats
+ *     summary: Get the authenticated user's statistics
  *     tags: [Users]
  */
-router.get('/me/stats', (req, res, next) => {
-  req.params.id = req.user.id;
-  next();
-}, ctrl.getUserStats);
+router.get(
+  '/me/stats',
+  (req, res, next) => {
+    req.params.id = req.user.id;
+    next();
+  },
+  ctrl.getUserStats
+);
 
 /**
  * @swagger
  * /users/me/avatar:
  *   post:
- *     summary: Upload avatar
+ *     summary: Upload the authenticated user's avatar
  *     tags: [Users]
  */
-router.post('/me/avatar',
+router.post(
+  '/me/avatar',
   setUploadType('avatar'),
   upload.single('avatar'),
   ctrl.uploadAvatar
@@ -66,11 +93,20 @@ router.post('/me/avatar',
  * @swagger
  * /users/me/fcm-token:
  *   patch:
- *     summary: Update FCM push token
+ *     summary: Update the authenticated user's FCM token
  *     tags: [Users]
  */
-router.patch('/me/fcm-token',
-  validate(Joi.object({ fcmToken: Joi.string().required() })),
+router.patch(
+  '/me/fcm-token',
+
+  validate(
+    Joi.object({
+      fcmToken: Joi.string()
+        .trim()
+        .required(),
+    })
+  ),
+
   ctrl.updateFcmToken
 );
 
@@ -78,26 +114,53 @@ router.patch('/me/fcm-token',
  * @swagger
  * /users/{id}:
  *   get:
- *     summary: Get user by ID
+ *     summary: Get a user by ID
  *     tags: [Users]
  */
-router.get('/:id', authorize(PERMISSIONS.USER_READ), ctrl.getUserById);
+router.get(
+  '/:id',
+  authorize(PERMISSIONS.USER_READ),
+  ctrl.getUserById
+);
 
 /**
  * @swagger
  * /users/{id}:
  *   patch:
- *     summary: Update user
+ *     summary: Update a user
  *     tags: [Users]
  */
-router.patch('/:id',
-  validate(Joi.object({
-    firstName: Joi.string().min(2).max(50).trim(),
-    lastName: Joi.string().min(2).max(50).trim(),
-    phone: Joi.string().allow('', null),
-    employeeId: Joi.string().allow('', null),
-    departmentId: Joi.string().uuid().allow(null),
-  })),
+router.patch(
+  '/:id',
+
+  authorizeSelfOr(PERMISSIONS.USER_UPDATE),
+
+  validate(
+    Joi.object({
+      firstName: Joi.string()
+        .min(2)
+        .max(50)
+        .trim(),
+
+      lastName: Joi.string()
+        .min(2)
+        .max(50)
+        .trim(),
+
+      phone: Joi.string()
+        .trim()
+        .allow('', null),
+
+      employeeId: Joi.string()
+        .trim()
+        .allow('', null),
+
+      departmentId: Joi.string()
+        .uuid()
+        .allow(null),
+    }).min(1)
+  ),
+
   ctrl.updateUser
 );
 
@@ -105,12 +168,22 @@ router.patch('/:id',
  * @swagger
  * /users/{id}/role:
  *   patch:
- *     summary: Update user role (admin only)
+ *     summary: Update a user's role
  *     tags: [Users]
  */
-router.patch('/:id/role',
+router.patch(
+  '/:id/role',
+
   authorize(PERMISSIONS.USER_MANAGE_ROLES),
-  validate(Joi.object({ roleId: Joi.string().uuid().required() })),
+
+  validate(
+    Joi.object({
+      roleId: Joi.string()
+        .uuid()
+        .required(),
+    })
+  ),
+
   ctrl.updateUserRole
 );
 
@@ -118,12 +191,26 @@ router.patch('/:id/role',
  * @swagger
  * /users/{id}/status:
  *   patch:
- *     summary: Update user status (admin only)
+ *     summary: Update a user's account status
  *     tags: [Users]
  */
-router.patch('/:id/status',
+router.patch(
+  '/:id/status',
+
   authorize(PERMISSIONS.USER_UPDATE),
-  validate(Joi.object({ status: Joi.string().valid('ACTIVE', 'INACTIVE', 'SUSPENDED').required() })),
+
+  validate(
+    Joi.object({
+      status: Joi.string()
+        .valid(
+          'ACTIVE',
+          'INACTIVE',
+          'SUSPENDED'
+        )
+        .required(),
+    })
+  ),
+
   ctrl.updateUserStatus
 );
 
@@ -131,18 +218,26 @@ router.patch('/:id/status',
  * @swagger
  * /users/{id}/stats:
  *   get:
- *     summary: Get user stats
+ *     summary: Get a user's statistics
  *     tags: [Users]
  */
-router.get('/:id/stats', authorize(PERMISSIONS.USER_READ), ctrl.getUserStats);
+router.get(
+  '/:id/stats',
+  authorize(PERMISSIONS.USER_READ),
+  ctrl.getUserStats
+);
 
 /**
  * @swagger
  * /users/{id}:
  *   delete:
- *     summary: Delete user (soft delete)
+ *     summary: Soft-delete a user
  *     tags: [Users]
  */
-router.delete('/:id', authorize(PERMISSIONS.USER_DELETE), ctrl.deleteUser);
+router.delete(
+  '/:id',
+  authorize(PERMISSIONS.USER_DELETE),
+  ctrl.deleteUser
+);
 
 module.exports = router;
