@@ -1,216 +1,871 @@
 // __tests__/integration/assets.test.js
 const request = require('supertest');
+
 const app = require('../../src/server');
-const { prisma } = require('../../src/config/database');
-const { seedTestData, cleanTestData } = require('../helpers/fixtures');
+const { prisma } = require(
+  '../../src/config/database'
+);
 
-const skipIfNoDb = process.env.SKIP_INTEGRATION_TESTS === 'true' ? describe.skip : describe;
+const {
+  seedTestData,
+  cleanTestData,
+} = require('../helpers/fixtures');
 
-skipIfNoDb('Assets Integration Tests', () => {
-  let adminToken;
-  let techToken;
-  let userToken;
-  let testData;
-  let createdAssetId;
+const describeWithDatabase =
+  process.env.SKIP_INTEGRATION_TESTS === 'true'
+    ? describe.skip
+    : describe;
 
-  beforeAll(async () => {
-    await cleanTestData(prisma);
-    testData = await seedTestData(prisma);
+const VALID_MISSING_ASSET_ID =
+  '11111111-1111-4111-8111-111111111111';
 
-    // Login admin
-    const adminLogin = await request(app)
-      .post('/api/v1/auth/login')
-      .send({ email: 'admin@test.com', password: 'Test@1234!' });
-    adminToken = adminLogin.body.data?.tokens?.accessToken;
+describeWithDatabase(
+  'Assets Integration Tests',
+  () => {
+    let adminToken;
+    let techToken;
+    let userToken;
+    let testData;
+    let createdAssetId;
+    let createdAssetTag;
 
-    // Login tech
-    const techLogin = await request(app)
-      .post('/api/v1/auth/login')
-      .send({ email: 'tech@test.com', password: 'Test@1234!' });
-    techToken = techLogin.body.data?.tokens?.accessToken;
-
-    // Login end user
-    const userLogin = await request(app)
-      .post('/api/v1/auth/login')
-      .send({ email: 'user@test.com', password: 'Test@1234!' });
-    userToken = userLogin.body.data?.tokens?.accessToken;
-  });
-
-  afterAll(async () => {
-    await cleanTestData(prisma);
-    await prisma.$disconnect();
-  });
-
-  // ── POST /api/v1/assets ──────────────────────────────────────────────────
-  describe('POST /api/v1/assets', () => {
-    it('admin can create an asset', async () => {
-      const res = await request(app)
-        .post('/api/v1/assets')
-        .set('Authorization', `Bearer ${adminToken}`)
+    async function login(email) {
+      const response = await request(app)
+        .post('/api/v1/auth/login')
         .send({
-          name: 'Dell Latitude 5420',
-          assetType: 'LAPTOP',
-          manufacturer: 'Dell',
-          model: 'Latitude 5420',
-          serialNumber: 'SN-TEST-001',
-          status: 'AVAILABLE',
-          purchaseDate: '2023-01-15',
-          purchaseCost: 1500.00,
-          warrantyExpiry: '2026-01-15',
-          location: 'Accra Office',
+          email,
+          password: 'Test@1234!',
         });
 
-      expect(res.status).toBe(201);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.name).toBe('Dell Latitude 5420');
-      expect(res.body.data.assetTag).toMatch(/^AST-/);
-      createdAssetId = res.body.data.id;
+      if (
+        response.status !== 200
+        || !response.body.data?.accessToken
+      ) {
+        throw new Error(
+          `Login failed for ${email}: `
+          + `${response.status} `
+          + JSON.stringify(response.body)
+        );
+      }
+
+      return response.body.data.accessToken;
+    }
+
+    function validAsset(overrides = {}) {
+      return {
+        name: 'Dell Latitude 5420',
+        category: 'LAPTOP',
+        make: 'Dell',
+        model: 'Latitude 5420',
+        serialNumber: 'SN-TEST-001',
+        purchaseDate: '2025-01-15',
+        purchasePrice: 1500,
+        warrantyExpiry: '2027-01-15',
+        location: 'Accra Office',
+
+        specifications: {
+          cpu: 'Intel Core i7',
+          ramGb: 16,
+        },
+
+        notes: 'Integration-test asset',
+        ...overrides,
+      };
+    }
+
+    beforeAll(async () => {
+      await cleanTestData(prisma);
+      testData = await seedTestData(prisma);
+
+      [
+        adminToken,
+        techToken,
+        userToken,
+      ] = await Promise.all([
+        login('admin@test.com'),
+        login('tech@test.com'),
+        login('user@test.com'),
+      ]);
     });
 
-    it('end user cannot create an asset', async () => {
-      const res = await request(app)
-        .post('/api/v1/assets')
-        .set('Authorization', `Bearer ${userToken}`)
-        .send({
-          name: 'Unauthorized Asset',
-          assetType: 'LAPTOP',
-          status: 'AVAILABLE',
-        });
-
-      expect(res.status).toBe(403);
+    afterAll(async () => {
+      await cleanTestData(prisma);
+      await prisma.$disconnect();
     });
 
-    it('returns 401 without auth token', async () => {
-      const res = await request(app).post('/api/v1/assets').send({ name: 'X', assetType: 'LAPTOP' });
-      expect(res.status).toBe(401);
+    describe('POST /api/v1/assets', () => {
+      it(
+        'admin can create a real in-stock asset',
+        async () => {
+          const response = await request(app)
+            .post('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            )
+            .send(validAsset());
+
+          expect(response.status).toBe(201);
+          expect(response.body.success).toBe(true);
+
+          expect(response.body.data.name)
+            .toBe('Dell Latitude 5420');
+
+          expect(response.body.data.category)
+            .toBe('LAPTOP');
+
+          expect(response.body.data.make)
+            .toBe('Dell');
+
+          expect(
+            Number(response.body.data.purchasePrice)
+          ).toBe(1500);
+
+          expect(response.body.data.status)
+            .toBe('INACTIVE');
+
+          expect(response.body.data.assetTag)
+            .toMatch(/^AST-/);
+
+          expect(response.body.data.assignments)
+            .toEqual([]);
+
+          createdAssetId =
+            response.body.data.id;
+
+          createdAssetTag =
+            response.body.data.assetTag;
+        }
+      );
+
+      it(
+        'rejects a duplicate serial number',
+        async () => {
+          const response = await request(app)
+            .post('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            )
+            .send(
+              validAsset({
+                name: 'Duplicate serial asset',
+              })
+            );
+
+          expect(response.status).toBe(409);
+        }
+      );
+
+      it(
+        'rejects a duplicate asset tag',
+        async () => {
+          const response = await request(app)
+            .post('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            )
+            .send(
+              validAsset({
+                name: 'Duplicate tag asset',
+                assetTag: createdAssetTag,
+
+                serialNumber:
+                  'SN-DUPLICATE-TAG-001',
+              })
+            );
+
+          expect(response.status).toBe(409);
+        }
+      );
+
+      it(
+        'cannot create an in-use asset without an assignment',
+        async () => {
+          const response = await request(app)
+            .post('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            )
+            .send(
+              validAsset({
+                name: 'Invalid in-use asset',
+
+                serialNumber:
+                  'SN-ACTIVE-WITHOUT-USER',
+
+                status: 'ACTIVE',
+              })
+            );
+
+          expect(response.status).toBe(400);
+        }
+      );
+
+      it(
+        'end user cannot create an asset',
+        async () => {
+          const response = await request(app)
+            .post('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${userToken}`
+            )
+            .send(
+              validAsset({
+                name: 'Unauthorized Asset',
+
+                serialNumber:
+                  'SN-UNAUTHORIZED-001',
+              })
+            );
+
+          expect(response.status).toBe(403);
+        }
+      );
+
+      it(
+        'returns 401 without an access token',
+        async () => {
+          const response = await request(app)
+            .post('/api/v1/assets')
+            .send(
+              validAsset({
+                name: 'Unauthenticated Asset',
+
+                serialNumber:
+                  'SN-UNAUTHENTICATED-001',
+              })
+            );
+
+          expect(response.status).toBe(401);
+        }
+      );
     });
-  });
 
-  // ── GET /api/v1/assets ───────────────────────────────────────────────────
-  describe('GET /api/v1/assets', () => {
-    it('admin can list all assets', async () => {
-      const res = await request(app)
-        .get('/api/v1/assets')
-        .set('Authorization', `Bearer ${adminToken}`);
+    describe('GET /api/v1/assets', () => {
+      it(
+        'admin can list assets with pagination',
+        async () => {
+          const response = await request(app)
+            .get('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            );
 
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body.data)).toBe(true);
-      expect(res.body.data.length).toBeGreaterThan(0);
-      expect(res.body.pagination).toBeDefined();
+          expect(response.status).toBe(200);
+
+          expect(
+            Array.isArray(response.body.data)
+          ).toBe(true);
+
+          expect(response.body.pagination)
+            .toEqual(
+              expect.objectContaining({
+                page: 1,
+                total: 1,
+              })
+            );
+
+          expect(
+            response.body.data.some(
+              asset =>
+                asset.id === createdAssetId
+            )
+          ).toBe(true);
+        }
+      );
+
+      it(
+        'technician can list assets',
+        async () => {
+          const response = await request(app)
+            .get('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${techToken}`
+            );
+
+          expect(response.status).toBe(200);
+        }
+      );
+
+      it(
+        'end user cannot list the organization asset inventory',
+        async () => {
+          const response = await request(app)
+            .get('/api/v1/assets')
+            .set(
+              'Authorization',
+              `Bearer ${userToken}`
+            );
+
+          expect(response.status).toBe(403);
+        }
+      );
+
+      it(
+        'can filter by category',
+        async () => {
+          const response = await request(app)
+            .get(
+              '/api/v1/assets?category=LAPTOP'
+            )
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            );
+
+          expect(response.status).toBe(200);
+
+          expect(response.body.data.length)
+            .toBeGreaterThan(0);
+
+          response.body.data.forEach(asset => {
+            expect(asset.category)
+              .toBe('LAPTOP');
+          });
+        }
+      );
+
+      it(
+        'can filter by status',
+        async () => {
+          const response = await request(app)
+            .get(
+              '/api/v1/assets?status=INACTIVE'
+            )
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            );
+
+          expect(response.status).toBe(200);
+
+          expect(response.body.data.length)
+            .toBeGreaterThan(0);
+
+          response.body.data.forEach(asset => {
+            expect(asset.status)
+              .toBe('INACTIVE');
+          });
+        }
+      );
+
+      it(
+        'safely clamps an oversized page limit',
+        async () => {
+          const response = await request(app)
+            .get('/api/v1/assets?limit=200')
+            .set(
+              'Authorization',
+              `Bearer ${adminToken}`
+            );
+
+          expect(response.status).toBe(200);
+
+          expect(
+            response.body.pagination.limit
+          ).toBe(100);
+        }
+      );
     });
 
-    it('technician can list assets', async () => {
-      const res = await request(app)
-        .get('/api/v1/assets')
-        .set('Authorization', `Bearer ${techToken}`);
-      expect(res.status).toBe(200);
-    });
+    describe(
+      'GET /api/v1/assets/:id',
+      () => {
+        it(
+          'returns an asset and its assignment history',
+          async () => {
+            const response = await request(app)
+              .get(
+                `/api/v1/assets/${createdAssetId}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
 
-    it('can filter by assetType', async () => {
-      const res = await request(app)
-        .get('/api/v1/assets?assetType=LAPTOP')
-        .set('Authorization', `Bearer ${adminToken}`);
+            expect(response.status).toBe(200);
 
-      expect(res.status).toBe(200);
-      res.body.data.forEach(asset => {
-        expect(asset.assetType).toBe('LAPTOP');
-      });
-    });
-  });
+            expect(response.body.data.id)
+              .toBe(createdAssetId);
 
-  // ── GET /api/v1/assets/:id ───────────────────────────────────────────────
-  describe('GET /api/v1/assets/:id', () => {
-    it('returns a single asset by id', async () => {
-      const res = await request(app)
-        .get(`/api/v1/assets/${createdAssetId}`)
-        .set('Authorization', `Bearer ${adminToken}`);
+            expect(
+              response.body.data.assignments
+            ).toEqual([]);
+          }
+        );
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.id).toBe(createdAssetId);
-      expect(res.body.data.name).toBe('Dell Latitude 5420');
-    });
+        it(
+          'returns 404 for a valid but missing asset id',
+          async () => {
+            const response = await request(app)
+              .get(
+                `/api/v1/assets/${VALID_MISSING_ASSET_ID}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
 
-    it('returns 404 for non-existent asset', async () => {
-      const res = await request(app)
-        .get('/api/v1/assets/non-existent-uuid-12345')
-        .set('Authorization', `Bearer ${adminToken}`);
-      expect(res.status).toBe(404);
-    });
-  });
+            expect(response.status).toBe(404);
+          }
+        );
 
-  // ── PUT /api/v1/assets/:id ───────────────────────────────────────────────
-  describe('PUT /api/v1/assets/:id', () => {
-    it('admin can update an asset', async () => {
-      const res = await request(app)
-        .put(`/api/v1/assets/${createdAssetId}`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ location: 'Kumasi Office', status: 'IN_USE' });
+        it(
+          'returns 400 for a malformed asset id',
+          async () => {
+            const response = await request(app)
+              .get(
+                '/api/v1/assets/not-a-uuid'
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.location).toBe('Kumasi Office');
-    });
-  });
+            expect(response.status).toBe(400);
+          }
+        );
+      }
+    );
 
-  // ── POST /api/v1/assets/:id/assign ──────────────────────────────────────
-  describe('POST /api/v1/assets/:id/assign', () => {
-    it('admin can assign an asset to a user', async () => {
-      const res = await request(app)
-        .post(`/api/v1/assets/${createdAssetId}/assign`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ userId: testData.endUser.id, notes: 'Assigned for testing purposes' });
+    describe(
+      'PATCH /api/v1/assets/:id',
+      () => {
+        it(
+          'admin can update an asset',
+          async () => {
+            const response = await request(app)
+              .patch(
+                `/api/v1/assets/${createdAssetId}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({
+                location: 'Kumasi Office',
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.assignment).toBeDefined();
-      expect(res.body.data.assignment.userId).toBe(testData.endUser.id);
-    });
+                notes:
+                  'Moved to the Kumasi equipment store',
+              });
 
-    it('can view assignment history', async () => {
-      const res = await request(app)
-        .get(`/api/v1/assets/${createdAssetId}/history`)
-        .set('Authorization', `Bearer ${adminToken}`);
+            expect(response.status).toBe(200);
 
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body.data)).toBe(true);
-      expect(res.body.data.length).toBeGreaterThan(0);
-    });
-  });
+            expect(
+              response.body.data.location
+            ).toBe('Kumasi Office');
 
-  // ── POST /api/v1/assets/:id/return ──────────────────────────────────────
-  describe('POST /api/v1/assets/:id/return', () => {
-    it('admin can return an assigned asset', async () => {
-      const res = await request(app)
-        .post(`/api/v1/assets/${createdAssetId}/return`)
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ notes: 'Returned in good condition' });
+            expect(response.body.data.notes)
+              .toBe(
+                'Moved to the Kumasi equipment store'
+              );
+          }
+        );
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.status).toBe('AVAILABLE');
-    });
-  });
+        it(
+          'rejects an empty update',
+          async () => {
+            const response = await request(app)
+              .patch(
+                `/api/v1/assets/${createdAssetId}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({});
 
-  // ── GET /api/v1/assets/stats ─────────────────────────────────────────────
-  describe('GET /api/v1/assets/stats', () => {
-    it('admin can get asset statistics', async () => {
-      const res = await request(app)
-        .get('/api/v1/assets/stats')
-        .set('Authorization', `Bearer ${adminToken}`);
+            expect(response.status).toBe(400);
+          }
+        );
 
-      expect(res.status).toBe(200);
-      expect(res.body.data).toHaveProperty('total');
-      expect(res.body.data).toHaveProperty('byStatus');
-      expect(res.body.data).toHaveProperty('byType');
-    });
-  });
+        it(
+          'cannot mark an unassigned asset as in use directly',
+          async () => {
+            const response = await request(app)
+              .patch(
+                `/api/v1/assets/${createdAssetId}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({
+                status: 'ACTIVE',
+              });
 
-  // ── DELETE /api/v1/assets/:id ────────────────────────────────────────────
-  describe('DELETE /api/v1/assets/:id', () => {
-    it('admin can soft-delete an unassigned asset', async () => {
-      const res = await request(app)
-        .delete(`/api/v1/assets/${createdAssetId}`)
-        .set('Authorization', `Bearer ${adminToken}`);
+            expect(response.status).toBe(409);
+          }
+        );
+      }
+    );
 
-      expect(res.status).toBe(200);
-      expect(res.body.message).toMatch(/deleted/i);
-    });
-  });
-});
+    describe(
+      'POST /api/v1/assets/:id/assign',
+      () => {
+        it(
+          'read-only technician cannot assign an asset',
+          async () => {
+            const response = await request(app)
+              .post(
+                `/api/v1/assets/${createdAssetId}/assign`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${techToken}`
+              )
+              .send({
+                userId: testData.endUser.id,
+              });
+
+            expect(response.status).toBe(403);
+          }
+        );
+
+        it(
+          'admin can assign an in-stock asset to an active user',
+          async () => {
+            const response = await request(app)
+              .post(
+                `/api/v1/assets/${createdAssetId}/assign`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({
+                userId: testData.endUser.id,
+                notes: 'Issued for remote work',
+              });
+
+            expect(response.status).toBe(200);
+
+            expect(
+              response.body.data.asset.status
+            ).toBe('ACTIVE');
+
+            expect(
+              response.body.data.assignment.userId
+            ).toBe(testData.endUser.id);
+
+            expect(
+              response.body.data.assignment.isActive
+            ).toBe(true);
+
+            expect(
+              response.body.data.assignment.user
+                .email
+            ).toBe('user@test.com');
+
+            const notification =
+              await prisma.notification.findFirst({
+                where: {
+                  userId: testData.endUser.id,
+                  type: 'ASSET_ASSIGNED',
+                },
+
+                orderBy: {
+                  createdAt: 'desc',
+                },
+              });
+
+            expect(notification).not.toBeNull();
+
+            expect(notification.data.assetId)
+              .toBe(createdAssetId);
+          }
+        );
+
+        it(
+          'list response includes the current assignee',
+          async () => {
+            const response = await request(app)
+              .get(
+                '/api/v1/assets?status=ACTIVE'
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
+
+            expect(response.status).toBe(200);
+
+            const asset =
+              response.body.data.find(
+                item =>
+                  item.id === createdAssetId
+              );
+
+            expect(asset).toBeDefined();
+
+            expect(asset.assignments)
+              .toHaveLength(1);
+
+            expect(
+              asset.assignments[0].user.email
+            ).toBe('user@test.com');
+          }
+        );
+
+        it(
+          'does not silently reassign an already assigned asset',
+          async () => {
+            const response = await request(app)
+              .post(
+                `/api/v1/assets/${createdAssetId}/assign`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({
+                userId: testData.techUser.id,
+              });
+
+            expect(response.status).toBe(409);
+          }
+        );
+
+        it(
+          'returns the active assignment in history',
+          async () => {
+            const response = await request(app)
+              .get(
+                `/api/v1/assets/${createdAssetId}/history`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
+
+            expect(response.status).toBe(200);
+
+            expect(response.body.data)
+              .toHaveLength(1);
+
+            expect(
+              response.body.data[0].isActive
+            ).toBe(true);
+
+            expect(
+              response.body.data[0].returnedAt
+            ).toBeNull();
+          }
+        );
+
+        it(
+          'cannot delete an asset while it is assigned',
+          async () => {
+            const response = await request(app)
+              .delete(
+                `/api/v1/assets/${createdAssetId}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
+
+            expect(response.status).toBe(409);
+          }
+        );
+      }
+    );
+
+    describe(
+      'POST /api/v1/assets/:id/return',
+      () => {
+        it(
+          'admin can return an assigned asset to stock',
+          async () => {
+            const response = await request(app)
+              .post(
+                `/api/v1/assets/${createdAssetId}/return`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({
+                notes:
+                  'Returned in good condition',
+              });
+
+            expect(response.status).toBe(200);
+
+            expect(
+              response.body.data.asset.status
+            ).toBe('INACTIVE');
+
+            expect(
+              response.body.data.assignment.isActive
+            ).toBe(false);
+
+            expect(
+              response.body.data.assignment.returnedAt
+            ).toBeTruthy();
+
+            expect(
+              response.body.data.assignment.notes
+            ).toBe(
+              'Returned in good condition'
+            );
+          }
+        );
+
+        it(
+          'rejects returning an asset twice',
+          async () => {
+            const response = await request(app)
+              .post(
+                `/api/v1/assets/${createdAssetId}/return`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              )
+              .send({});
+
+            expect(response.status).toBe(409);
+          }
+        );
+
+        it(
+          'history records the completed return',
+          async () => {
+            const response = await request(app)
+              .get(
+                `/api/v1/assets/${createdAssetId}/history`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
+
+            expect(response.status).toBe(200);
+
+            expect(response.body.data)
+              .toHaveLength(1);
+
+            expect(
+              response.body.data[0].isActive
+            ).toBe(false);
+
+            expect(
+              response.body.data[0].returnedAt
+            ).toBeTruthy();
+          }
+        );
+      }
+    );
+
+    describe(
+      'GET /api/v1/assets/stats',
+      () => {
+        it(
+          'returns production asset statistics',
+          async () => {
+            const response = await request(app)
+              .get('/api/v1/assets/stats')
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
+
+            expect(response.status).toBe(200);
+
+            expect(response.body.data)
+              .toEqual(
+                expect.objectContaining({
+                  total: 1,
+                  assigned: 0,
+                  unassigned: 1,
+
+                  warrantyExpiringSoon:
+                    expect.any(Number),
+
+                  byStatus:
+                    expect.objectContaining({
+                      INACTIVE: 1,
+                    }),
+
+                  byCategory:
+                    expect.objectContaining({
+                      LAPTOP: 1,
+                    }),
+                })
+              );
+          }
+        );
+      }
+    );
+
+    describe(
+      'DELETE /api/v1/assets/:id',
+      () => {
+        it(
+          'admin can soft-delete an unassigned asset',
+          async () => {
+            const response = await request(app)
+              .delete(
+                `/api/v1/assets/${createdAssetId}`
+              )
+              .set(
+                'Authorization',
+                `Bearer ${adminToken}`
+              );
+
+            expect(response.status).toBe(200);
+
+            expect(response.body.message)
+              .toMatch(/deleted/i);
+          }
+        );
+
+        it(
+          'deleted asset is no longer readable or listed',
+          async () => {
+            const [
+              detailResponse,
+              listResponse,
+            ] = await Promise.all([
+              request(app)
+                .get(
+                  `/api/v1/assets/${createdAssetId}`
+                )
+                .set(
+                  'Authorization',
+                  `Bearer ${adminToken}`
+                ),
+
+              request(app)
+                .get('/api/v1/assets')
+                .set(
+                  'Authorization',
+                  `Bearer ${adminToken}`
+                ),
+            ]);
+
+            expect(detailResponse.status)
+              .toBe(404);
+
+            expect(listResponse.status)
+              .toBe(200);
+
+            expect(
+              listResponse.body.data.some(
+                asset =>
+                  asset.id === createdAssetId
+              )
+            ).toBe(false);
+          }
+        );
+      }
+    );
+  }
+);
