@@ -1,8 +1,14 @@
 // src/modules/auth/auth.service.js
 const bcrypt = require('bcryptjs');
 
-const { prisma } = require('../../config/database');
-const { cacheSet } = require('../../config/redis');
+const {
+  prisma,
+} = require('../../config/database');
+
+const {
+  cacheSet,
+} = require('../../config/redis');
+
 const {
   sendEmail,
   getEmailTemplate,
@@ -16,6 +22,7 @@ const {
   verifyRefreshToken,
   verifyResetToken,
   verifyEmailToken,
+  verifyAccessToken,
 } = require('../../utils/jwt');
 
 const {
@@ -25,7 +32,8 @@ const {
   AppError,
 } = require('../../shared/errors');
 
-const logger = require('../../config/logger');
+const logger =
+  require('../../config/logger');
 
 const {
   cacheAuthenticatedUser,
@@ -43,17 +51,25 @@ async function register(data) {
     departmentId,
   } = data;
 
-  const existing = await prisma.user.findUnique({
-    where: { email },
-  });
+  const existing =
+    await prisma.user.findUnique({
+      where: {
+        email,
+      },
+    });
 
   if (existing) {
-    throw new ConflictError('Email already registered');
+    throw new ConflictError(
+      'Email already registered'
+    );
   }
 
-  const role = await prisma.role.findUnique({
-    where: { name: 'end_user' },
-  });
+  const role =
+    await prisma.role.findUnique({
+      where: {
+        name: 'end_user',
+      },
+    });
 
   if (!role) {
     throw new AppError(
@@ -63,52 +79,69 @@ async function register(data) {
   }
 
   const bcryptRounds =
-    parseInt(process.env.BCRYPT_ROUNDS, 10) || 12;
+    parseInt(
+      process.env.BCRYPT_ROUNDS,
+      10
+    )
+    || 12;
 
-  const hashedPassword = await bcrypt.hash(
-    password,
-    bcryptRounds
-  );
+  const hashedPassword =
+    await bcrypt.hash(
+      password,
+      bcryptRounds
+    );
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      password: hashedPassword,
-      firstName,
-      lastName,
-      phone,
-      employeeId,
-      departmentId,
-      roleId: role.id,
-      status: 'PENDING_VERIFICATION',
-    },
+  const user =
+    await prisma.user.create({
+      data: {
+        email,
+        password:
+          hashedPassword,
+        firstName,
+        lastName,
+        phone,
+        employeeId,
+        departmentId,
+        roleId: role.id,
+        status:
+          'PENDING_VERIFICATION',
+      },
 
-    include: {
-      role: true,
-    },
-  });
+      include: {
+        role: true,
+      },
+    });
 
-  const verifyToken = signVerifyToken({
-    userId: user.id,
-    email: user.email,
-  });
-
-  const expiresAt = new Date(
-    Date.now() + 24 * 60 * 60 * 1000
-  );
-
-  await prisma.emailVerificationToken.create({
-    data: {
+  const verifyToken =
+    signVerifyToken({
       userId: user.id,
-      token: verifyToken,
-      expiresAt,
-    },
-  });
+      email: user.email,
+    });
 
-  const template = getEmailTemplate('welcome', {
-    firstName,
-    token: verifyToken,
-  });
+  const expiresAt =
+    new Date(
+      Date.now()
+      + 24 * 60 * 60 * 1000
+    );
+
+  await prisma
+    .emailVerificationToken
+    .create({
+      data: {
+        userId: user.id,
+        token: verifyToken,
+        expiresAt,
+      },
+    });
+
+  const template =
+    getEmailTemplate(
+      'welcome',
+      {
+        firstName,
+        token: verifyToken,
+      }
+    );
 
   sendEmail({
     to: email,
@@ -116,13 +149,17 @@ async function register(data) {
     html: template.html,
   }).catch(() => {});
 
-  logger.info(`User registered: ${email}`);
+  logger.info(
+    `User registered: ${email}`
+  );
 
   return {
     id: user.id,
     email: user.email,
-    firstName: user.firstName,
-    lastName: user.lastName,
+    firstName:
+      user.firstName,
+    lastName:
+      user.lastName,
   };
 }
 
@@ -132,24 +169,25 @@ async function login(
   ipAddress,
   userAgent
 ) {
-  const user = await prisma.user.findUnique({
-    where: {
-      email,
-      deletedAt: null,
-    },
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        email,
+        deletedAt: null,
+      },
 
-    include: {
-      role: {
-        include: {
-          permissions: {
-            include: {
-              permission: true,
+      include: {
+        role: {
+          include: {
+            permissions: {
+              include: {
+                permission: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    });
 
   if (!user) {
     throw new AuthenticationError(
@@ -159,39 +197,52 @@ async function login(
 
   if (
     user.lockedUntil
-    && user.lockedUntil > new Date()
+    && user.lockedUntil
+      > new Date()
   ) {
-    const minutes = Math.ceil(
-      (user.lockedUntil - new Date()) / 60000
-    );
+    const minutes =
+      Math.ceil(
+        (
+          user.lockedUntil
+          - new Date()
+        )
+        / 60000
+      );
 
     throw new AuthenticationError(
       `Account locked. Try again in ${minutes} minutes`
     );
   }
 
-  const passwordValid = await bcrypt.compare(
-    password,
-    user.password
-  );
+  const passwordValid =
+    await bcrypt.compare(
+      password,
+      user.password
+    );
 
   if (!passwordValid) {
-    const attempts = user.failedLoginAttempts + 1;
+    const attempts =
+      user.failedLoginAttempts
+      + 1;
 
     const updateData = {
-      failedLoginAttempts: attempts,
+      failedLoginAttempts:
+        attempts,
     };
 
     if (attempts >= 5) {
-      updateData.lockedUntil = new Date(
-        Date.now() + 30 * 60 * 1000
-      );
+      updateData.lockedUntil =
+        new Date(
+          Date.now()
+          + 30 * 60 * 1000
+        );
     }
 
     await prisma.user.update({
       where: {
         id: user.id,
       },
+
       data: updateData,
     });
 
@@ -200,39 +251,51 @@ async function login(
     );
   }
 
-  if (user.status === 'SUSPENDED') {
+  if (
+    user.status
+    === 'SUSPENDED'
+  ) {
     throw new AuthenticationError(
       'Account suspended'
     );
   }
 
-  if (user.status === 'INACTIVE') {
+  if (
+    user.status
+    === 'INACTIVE'
+  ) {
     throw new AuthenticationError(
       'Account deactivated'
     );
   }
 
-  const accessToken = signAccessToken({
-    userId: user.id,
-    email: user.email,
-    role: user.role.name,
-  });
+  const accessToken =
+    signAccessToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role.name,
+    });
 
-  const refreshTokenValue = signRefreshToken({
-    userId: user.id,
-  });
+  const refreshTokenValue =
+    signRefreshToken({
+      userId: user.id,
+    });
 
-  const sessionExpiresAt = new Date(
-    Date.now() + 7 * 24 * 60 * 60 * 1000
-  );
+  const sessionExpiresAt =
+    new Date(
+      Date.now()
+      + 7 * 24 * 60 * 60 * 1000
+    );
 
   await prisma.session.create({
     data: {
       userId: user.id,
-      refreshToken: refreshTokenValue,
+      refreshToken:
+        refreshTokenValue,
       ipAddress,
       userAgent,
-      expiresAt: sessionExpiresAt,
+      expiresAt:
+        sessionExpiresAt,
     },
   });
 
@@ -244,20 +307,26 @@ async function login(
     data: {
       failedLoginAttempts: 0,
       lockedUntil: null,
-      lastLoginAt: new Date(),
+      lastLoginAt:
+        new Date(),
     },
   });
 
   /*
-   * Never cache the Prisma login record directly.
-   * It contains the password hash and account lockout fields.
+   * Do not cache the complete Prisma login record because it
+   * contains the password hash and lockout fields.
    */
-  await cacheAuthenticatedUser(user);
-
-  const permissions = user.role.permissions.map(
-    rolePermission =>
-      rolePermission.permission.name
+  await cacheAuthenticatedUser(
+    user
   );
+
+  const permissions =
+    user.role.permissions.map(
+      rolePermission =>
+        rolePermission
+          .permission
+          .name
+    );
 
   logger.info(
     `User logged in: ${email} from ${ipAddress}`
@@ -265,75 +334,103 @@ async function login(
 
   return {
     accessToken,
-    refreshToken: refreshTokenValue,
+
+    refreshToken:
+      refreshTokenValue,
 
     user: {
       id: user.id,
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: user.role.name,
-      roleName: user.role.displayName,
+      firstName:
+        user.firstName,
+      lastName:
+        user.lastName,
+      role:
+        user.role.name,
+      roleName:
+        user.role.displayName,
       permissions,
-      status: user.status,
-      emailVerified: user.emailVerified,
+      status:
+        user.status,
+      emailVerified:
+        user.emailVerified,
     },
   };
 }
 
-async function refreshTokens(token) {
-  const decoded = verifyRefreshToken(token);
+async function refreshTokens(
+  token
+) {
+  const decoded =
+    verifyRefreshToken(token);
 
-  const session = await prisma.session.findUnique({
-    where: {
-      refreshToken: token,
-    },
-  });
+  const session =
+    await prisma
+      .session
+      .findUnique({
+        where: {
+          refreshToken: token,
+        },
+      });
 
-  if (!session || !session.isValid) {
+  if (
+    !session
+    || !session.isValid
+  ) {
     throw new AuthenticationError(
       'Invalid refresh token'
     );
   }
 
-  if (session.expiresAt < new Date()) {
-    await prisma.session.delete({
-      where: {
-        id: session.id,
-      },
-    });
+  if (
+    session.expiresAt
+    < new Date()
+  ) {
+    await prisma
+      .session
+      .delete({
+        where: {
+          id: session.id,
+        },
+      });
 
     throw new AuthenticationError(
       'Refresh token expired'
     );
   }
 
-  const user = await prisma.user.findUnique({
-    where: {
-      id: decoded.userId,
-      deletedAt: null,
-    },
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        id: decoded.userId,
+        deletedAt: null,
+      },
 
-    include: {
-      role: true,
-    },
-  });
+      include: {
+        role: true,
+      },
+    });
 
-  if (!user || user.status !== 'ACTIVE') {
+  if (
+    !user
+    || user.status !== 'ACTIVE'
+  ) {
     throw new AuthenticationError(
       'User not found or inactive'
     );
   }
 
-  const newAccessToken = signAccessToken({
-    userId: user.id,
-    email: user.email,
-    role: user.role.name,
-  });
+  const newAccessToken =
+    signAccessToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role.name,
+    });
 
-  const newRefreshToken = signRefreshToken({
-    userId: user.id,
-  });
+  const newRefreshToken =
+    signRefreshToken({
+      userId: user.id,
+    });
 
   await prisma.session.update({
     where: {
@@ -341,89 +438,162 @@ async function refreshTokens(token) {
     },
 
     data: {
-      refreshToken: newRefreshToken,
-      updatedAt: new Date(),
+      refreshToken:
+        newRefreshToken,
+      updatedAt:
+        new Date(),
     },
   });
 
   return {
-    accessToken: newAccessToken,
-    refreshToken: newRefreshToken,
+    accessToken:
+      newAccessToken,
+
+    refreshToken:
+      newRefreshToken,
   };
 }
 
-async function logout(userId, token) {
-  if (token) {
-    await cacheSet(
-      `blacklist:${token}`,
-      '1',
-      900
+async function logout(
+  userId,
+  token
+) {
+  if (!token) {
+    throw new AuthenticationError(
+      'No access token provided'
     );
   }
 
-  await prisma.session.updateMany({
-    where: {
-      userId,
-      isValid: true,
-    },
+  const decoded =
+    verifyAccessToken(token);
 
-    data: {
-      isValid: false,
-    },
-  });
+  if (
+    decoded.userId
+    !== userId
+  ) {
+    throw new AuthenticationError(
+      'Access token does not belong to this user'
+    );
+  }
 
-  await invalidateUserCaches(userId);
+  const nowInSeconds =
+    Math.floor(
+      Date.now() / 1000
+    );
 
-  logger.info(`User logged out: ${userId}`);
+  const blacklistTtl =
+    Math.max(
+      1,
+
+      decoded.exp
+        ? decoded.exp
+          - nowInSeconds
+        : 900
+    );
+
+  /*
+   * Revocation is security-critical. Never return a successful
+   * logout response if the blacklist was not persisted.
+   */
+  const tokenWasBlacklisted =
+    await cacheSet(
+      `blacklist:${token}`,
+      '1',
+      blacklistTtl
+    );
+
+  if (!tokenWasBlacklisted) {
+    throw new AppError(
+      'Unable to complete logout safely. Please try again.',
+      503
+    );
+  }
+
+  await prisma
+    .session
+    .updateMany({
+      where: {
+        userId,
+        isValid: true,
+      },
+
+      data: {
+        isValid: false,
+      },
+    });
+
+  await invalidateUserCaches(
+    userId
+  );
+
+  logger.info(
+    `User logged out: ${userId}`
+  );
 }
 
-async function forgotPassword(email) {
-  const user = await prisma.user.findUnique({
-    where: {
-      email,
-      deletedAt: null,
-    },
-  });
+async function forgotPassword(
+  email
+) {
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        email,
+        deletedAt: null,
+      },
+    });
 
-  // Do not reveal whether an email address exists.
+  /*
+   * Do not reveal whether the email address exists.
+   */
   if (!user) {
     return;
   }
 
-  await prisma.passwordResetToken.updateMany({
-    where: {
+  await prisma
+    .passwordResetToken
+    .updateMany({
+      where: {
+        userId: user.id,
+        used: false,
+      },
+
+      data: {
+        used: true,
+      },
+    });
+
+  const resetToken =
+    signResetToken({
       userId: user.id,
-      used: false,
-    },
+    });
 
-    data: {
-      used: true,
-    },
-  });
+  const expiresAt =
+    new Date(
+      Date.now()
+      + 60 * 60 * 1000
+    );
 
-  const resetToken = signResetToken({
-    userId: user.id,
-  });
+  await prisma
+    .passwordResetToken
+    .create({
+      data: {
+        userId: user.id,
+        token: resetToken,
+        expiresAt,
+      },
+    });
 
-  const expiresAt = new Date(
-    Date.now() + 60 * 60 * 1000
-  );
+  const template =
+    getEmailTemplate(
+      'passwordReset',
+      {
+        firstName:
+          user.firstName,
 
-  await prisma.passwordResetToken.create({
-    data: {
-      userId: user.id,
-      token: resetToken,
-      expiresAt,
-    },
-  });
-
-  const template = getEmailTemplate(
-    'passwordReset',
-    {
-      firstName: user.firstName,
-      token: resetToken,
-    }
-  );
+        token:
+          resetToken,
+      }
+    );
 
   sendEmail({
     to: email,
@@ -436,41 +606,61 @@ async function forgotPassword(email) {
   );
 }
 
-async function resetPassword(token, newPassword) {
-  const decoded = verifyResetToken(token);
+async function resetPassword(
+  token,
+  newPassword
+) {
+  const decoded =
+    verifyResetToken(token);
 
   const resetRecord =
-    await prisma.passwordResetToken.findUnique({
-      where: {
-        token,
-      },
-    });
+    await prisma
+      .passwordResetToken
+      .findUnique({
+        where: {
+          token,
+        },
+      });
 
-  if (!resetRecord || resetRecord.used) {
+  if (
+    !resetRecord
+    || resetRecord.used
+  ) {
     throw new AuthenticationError(
       'Invalid or used reset token'
     );
   }
 
-  if (resetRecord.expiresAt < new Date()) {
+  if (
+    resetRecord.expiresAt
+    < new Date()
+  ) {
     throw new AuthenticationError(
       'Reset token expired'
     );
   }
 
-  if (resetRecord.userId !== decoded.userId) {
+  if (
+    resetRecord.userId
+    !== decoded.userId
+  ) {
     throw new AuthenticationError(
       'Invalid token'
     );
   }
 
   const bcryptRounds =
-    parseInt(process.env.BCRYPT_ROUNDS, 10) || 12;
+    parseInt(
+      process.env.BCRYPT_ROUNDS,
+      10
+    )
+    || 12;
 
-  const hashedPassword = await bcrypt.hash(
-    newPassword,
-    bcryptRounds
-  );
+  const hashedPassword =
+    await bcrypt.hash(
+      newPassword,
+      bcryptRounds
+    );
 
   await prisma.$transaction([
     prisma.user.update({
@@ -479,23 +669,27 @@ async function resetPassword(token, newPassword) {
       },
 
       data: {
-        password: hashedPassword,
+        password:
+          hashedPassword,
       },
     }),
 
-    prisma.passwordResetToken.update({
-      where: {
-        id: resetRecord.id,
-      },
+    prisma
+      .passwordResetToken
+      .update({
+        where: {
+          id: resetRecord.id,
+        },
 
-      data: {
-        used: true,
-      },
-    }),
+        data: {
+          used: true,
+        },
+      }),
 
     prisma.session.updateMany({
       where: {
-        userId: decoded.userId,
+        userId:
+          decoded.userId,
       },
 
       data: {
@@ -504,7 +698,9 @@ async function resetPassword(token, newPassword) {
     }),
   ]);
 
-  await invalidateUserCaches(decoded.userId);
+  await invalidateUserCaches(
+    decoded.userId
+  );
 
   logger.info(
     `Password reset for user: ${decoded.userId}`
@@ -516,20 +712,24 @@ async function changePassword(
   currentPassword,
   newPassword
 ) {
-  const user = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
-  });
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+    });
 
   if (!user) {
-    throw new NotFoundError('User not found');
+    throw new NotFoundError(
+      'User not found'
+    );
   }
 
-  const valid = await bcrypt.compare(
-    currentPassword,
-    user.password
-  );
+  const valid =
+    await bcrypt.compare(
+      currentPassword,
+      user.password
+    );
 
   if (!valid) {
     throw new AuthenticationError(
@@ -538,12 +738,17 @@ async function changePassword(
   }
 
   const bcryptRounds =
-    parseInt(process.env.BCRYPT_ROUNDS, 10) || 12;
+    parseInt(
+      process.env.BCRYPT_ROUNDS,
+      10
+    )
+    || 12;
 
-  const hashedPassword = await bcrypt.hash(
-    newPassword,
-    bcryptRounds
-  );
+  const hashedPassword =
+    await bcrypt.hash(
+      newPassword,
+      bcryptRounds
+    );
 
   await prisma.user.update({
     where: {
@@ -551,40 +756,56 @@ async function changePassword(
     },
 
     data: {
-      password: hashedPassword,
+      password:
+        hashedPassword,
     },
   });
 
-  await prisma.session.updateMany({
-    where: {
-      userId,
-    },
-
-    data: {
-      isValid: false,
-    },
-  });
-
-  await invalidateUserCaches(userId);
-}
-
-async function verifyEmail(token) {
-  const decoded = verifyEmailToken(token);
-
-  const record =
-    await prisma.emailVerificationToken.findUnique({
+  await prisma
+    .session
+    .updateMany({
       where: {
-        token,
+        userId,
+      },
+
+      data: {
+        isValid: false,
       },
     });
 
-  if (!record || record.used) {
+  await invalidateUserCaches(
+    userId
+  );
+}
+
+async function verifyEmail(
+  token
+) {
+  const decoded =
+    verifyEmailToken(token);
+
+  const record =
+    await prisma
+      .emailVerificationToken
+      .findUnique({
+        where: {
+          token,
+        },
+      });
+
+  if (
+    !record
+    || record.used
+  ) {
     throw new AuthenticationError(
       'Invalid or used verification token'
     );
   }
 
-  if (record.expiresAt < new Date()) {
+  if (
+    record.expiresAt
+    < new Date()
+  ) {
     throw new AuthenticationError(
       'Verification token expired'
     );
@@ -602,68 +823,92 @@ async function verifyEmail(token) {
       },
     }),
 
-    prisma.emailVerificationToken.update({
-      where: {
-        id: record.id,
-      },
+    prisma
+      .emailVerificationToken
+      .update({
+        where: {
+          id: record.id,
+        },
 
-      data: {
-        used: true,
-      },
-    }),
+        data: {
+          used: true,
+        },
+      }),
   ]);
 
-  await invalidateUserCaches(decoded.userId);
+  await invalidateUserCaches(
+    decoded.userId
+  );
 
   logger.info(
     `Email verified for user: ${decoded.userId}`
   );
 }
 
-async function resendVerification(email) {
-  const user = await prisma.user.findUnique({
-    where: {
-      email,
-      deletedAt: null,
-    },
-  });
+async function resendVerification(
+  email
+) {
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        email,
+        deletedAt: null,
+      },
+    });
 
-  if (!user || user.emailVerified) {
+  if (
+    !user
+    || user.emailVerified
+  ) {
     return;
   }
 
-  await prisma.emailVerificationToken.updateMany({
-    where: {
+  await prisma
+    .emailVerificationToken
+    .updateMany({
+      where: {
+        userId: user.id,
+        used: false,
+      },
+
+      data: {
+        used: true,
+      },
+    });
+
+  const verifyToken =
+    signVerifyToken({
       userId: user.id,
-      used: false,
-    },
+      email: user.email,
+    });
 
-    data: {
-      used: true,
-    },
-  });
+  const expiresAt =
+    new Date(
+      Date.now()
+      + 24 * 60 * 60 * 1000
+    );
 
-  const verifyToken = signVerifyToken({
-    userId: user.id,
-    email: user.email,
-  });
+  await prisma
+    .emailVerificationToken
+    .create({
+      data: {
+        userId: user.id,
+        token: verifyToken,
+        expiresAt,
+      },
+    });
 
-  const expiresAt = new Date(
-    Date.now() + 24 * 60 * 60 * 1000
-  );
+  const template =
+    getEmailTemplate(
+      'welcome',
+      {
+        firstName:
+          user.firstName,
 
-  await prisma.emailVerificationToken.create({
-    data: {
-      userId: user.id,
-      token: verifyToken,
-      expiresAt,
-    },
-  });
-
-  const template = getEmailTemplate('welcome', {
-    firstName: user.firstName,
-    token: verifyToken,
-  });
+        token:
+          verifyToken,
+      }
+    );
 
   sendEmail({
     to: email,
@@ -672,11 +917,14 @@ async function resendVerification(email) {
   }).catch(() => {});
 }
 
-async function getSessions(userId) {
+async function getSessions(
+  userId
+) {
   return prisma.session.findMany({
     where: {
       userId,
       isValid: true,
+
       expiresAt: {
         gt: new Date(),
       },
@@ -696,16 +944,22 @@ async function getSessions(userId) {
   });
 }
 
-async function revokeSession(userId, sessionId) {
-  const session = await prisma.session.findFirst({
-    where: {
-      id: sessionId,
-      userId,
-    },
-  });
+async function revokeSession(
+  userId,
+  sessionId
+) {
+  const session =
+    await prisma.session.findFirst({
+      where: {
+        id: sessionId,
+        userId,
+      },
+    });
 
   if (!session) {
-    throw new NotFoundError('Session not found');
+    throw new NotFoundError(
+      'Session not found'
+    );
   }
 
   await prisma.session.update({
