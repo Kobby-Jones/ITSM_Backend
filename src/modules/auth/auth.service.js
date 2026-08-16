@@ -110,7 +110,7 @@ async function register(data) {
         departmentId,
         roleId: role.id,
         status:
-          'PENDING_VERIFICATION',
+          'ACTIVE',
       },
 
       include: {
@@ -265,15 +265,6 @@ async function login(
 
     throw new AuthenticationError(
       'Invalid credentials'
-    );
-  }
-
-  if (
-    user.status
-    === 'PENDING_VERIFICATION'
-  ) {
-    throw new AuthenticationError(
-      'Please verify your email before signing in'
     );
   }
 
