@@ -94,6 +94,12 @@ const API_PREFIX =
 // SECURITY MIDDLEWARE
 // ============================================================
 
+// Trust the first proxy (nginx) so req.ip and rate limiting
+// use the real client IP from X-Forwarded-For, not 172.x.x.x.
+if (process.env.TRUST_PROXY) {
+  app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+}
+
 app.use(
   helmet({
     contentSecurityPolicy:
