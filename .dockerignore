@@ -27,7 +27,7 @@ logs/
 # Git
 .git/
 .gitignore
-
+certbot/
 # OS
 .DS_Store
 Thumbs.db
