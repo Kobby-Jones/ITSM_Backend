@@ -84,7 +84,7 @@ router.put(
         .integer()
         .min(1)
         .max(100)
-        .default(80),
+        .default(75),
 
       isActive: Joi.boolean(),
     }),

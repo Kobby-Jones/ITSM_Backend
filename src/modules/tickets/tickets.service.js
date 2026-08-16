@@ -131,34 +131,39 @@ async function createTicket(data, creatorId) {
     priority
   );
 
-  const ticket = await prisma.ticket.create({
-    data: {
-      ticketNumber,
-      title,
-      description,
-      category,
-      priority,
-      tags,
-      offlineId,
-      departmentId,
-      impact,
-      urgency,
-      creatorId,
-      ...slaDates,
-    },
+  // Create the ticket and its initial history atomically so a failure
+  // between them can never leave an orphan ticket with no history.
+  const ticket = await prisma.$transaction(async (tx) => {
+    const created = await tx.ticket.create({
+      data: {
+        ticketNumber,
+        title,
+        description,
+        category,
+        priority,
+        tags,
+        offlineId,
+        departmentId,
+        impact,
+        urgency,
+        creatorId,
+        ...slaDates,
+      },
+      include: TICKET_INCLUDE,
+    });
 
-    include: TICKET_INCLUDE,
-  });
+    await tx.ticketHistory.create({
+      data: {
+        ticketId: created.id,
+        changedById: creatorId,
+        field: 'status',
+        oldValue: null,
+        newValue: 'OPEN',
+        action: 'CREATED',
+      },
+    });
 
-  await prisma.ticketHistory.create({
-    data: {
-      ticketId: ticket.id,
-      changedById: creatorId,
-      field: 'status',
-      oldValue: null,
-      newValue: 'OPEN',
-      action: 'CREATED',
-    },
+    return created;
   });
 
   routingEngine
@@ -547,35 +552,39 @@ async function assignTicket(
     }
   }
 
-  const updated = await prisma.ticket.update({
-    where: {
-      id,
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.ticket.update({
+      where: {
+        id,
+      },
 
-    data: {
-      assigneeId,
-      status: assigneeId ? 'ASSIGNED' : 'OPEN',
-      assignedAt: assigneeId ? new Date() : null,
+      data: {
+        assigneeId,
+        status: assigneeId ? 'ASSIGNED' : 'OPEN',
+        assignedAt: assigneeId ? new Date() : null,
 
-      firstResponseAt:
-        ticket.firstResponseAt
-        ?? (assigneeId ? new Date() : null),
+        firstResponseAt:
+          ticket.firstResponseAt
+          ?? (assigneeId ? new Date() : null),
 
-      lastActivityAt: new Date(),
-    },
+        lastActivityAt: new Date(),
+      },
 
-    include: TICKET_INCLUDE,
-  });
+      include: TICKET_INCLUDE,
+    });
 
-  await prisma.ticketHistory.create({
-    data: {
-      ticketId: id,
-      changedById: assignedById,
-      field: 'assigneeId',
-      oldValue: ticket.assigneeId,
-      newValue: assigneeId,
-      action: 'ASSIGNED',
-    },
+    await tx.ticketHistory.create({
+      data: {
+        ticketId: id,
+        changedById: assignedById,
+        field: 'assigneeId',
+        oldValue: ticket.assigneeId,
+        newValue: assigneeId,
+        action: 'ASSIGNED',
+      },
+    });
+
+    return result;
   });
 
   if (assigneeId) {

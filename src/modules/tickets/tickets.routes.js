@@ -7,6 +7,7 @@ const controller = require('./tickets.controller');
 
 const {
   validate,
+  auditLog,
 } = require('../../middleware/index');
 
 const {
@@ -63,6 +64,7 @@ router.post(
   '/',
 
   authorize(PERMISSIONS.TICKET_CREATE),
+  auditLog('CREATE', 'ticket'),
 
   validate(
     Joi.object({
@@ -160,6 +162,7 @@ router.patch(
     PERMISSIONS.TICKET_UPDATE_OWN,
     PERMISSIONS.TICKET_UPDATE_ALL
   ),
+  auditLog('UPDATE', 'ticket'),
 
   validate(
     Joi.object({

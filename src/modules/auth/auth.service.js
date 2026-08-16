@@ -1,5 +1,11 @@
 // src/modules/auth/auth.service.js
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+
+/// Hash a token for safe storage — we never store raw refresh/reset tokens.
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 const {
   prisma,
@@ -195,23 +201,34 @@ async function login(
     );
   }
 
-  if (
-    user.lockedUntil
-    && user.lockedUntil
-      > new Date()
-  ) {
-    const minutes =
-      Math.ceil(
-        (
-          user.lockedUntil
-          - new Date()
-        )
-        / 60000
-      );
+  if (user.lockedUntil) {
+    if (user.lockedUntil > new Date()) {
+      const minutes =
+        Math.ceil(
+          (
+            user.lockedUntil
+            - new Date()
+          )
+          / 60000
+        );
 
-    throw new AuthenticationError(
-      `Account locked. Try again in ${minutes} minutes`
-    );
+      throw new AuthenticationError(
+        `Account locked. Try again in ${minutes} minutes`
+      );
+    }
+
+    // Lock has expired — reset the counter so the next failure
+    // doesn't immediately re-lock the account.
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      },
+    });
+
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
   }
 
   const passwordValid =
@@ -248,6 +265,15 @@ async function login(
 
     throw new AuthenticationError(
       'Invalid credentials'
+    );
+  }
+
+  if (
+    user.status
+    === 'PENDING_VERIFICATION'
+  ) {
+    throw new AuthenticationError(
+      'Please verify your email before signing in'
     );
   }
 
@@ -291,7 +317,7 @@ async function login(
     data: {
       userId: user.id,
       refreshToken:
-        refreshTokenValue,
+        hashToken(refreshTokenValue),
       ipAddress,
       userAgent,
       expiresAt:
@@ -369,7 +395,7 @@ async function refreshTokens(
       .session
       .findUnique({
         where: {
-          refreshToken: token,
+          refreshToken: hashToken(token),
         },
       });
 
@@ -439,7 +465,7 @@ async function refreshTokens(
 
     data: {
       refreshToken:
-        newRefreshToken,
+        hashToken(newRefreshToken),
       updatedAt:
         new Date(),
     },
@@ -509,18 +535,28 @@ async function logout(
     );
   }
 
-  await prisma
-    .session
-    .updateMany({
+  // Revoke only the current session. Find the most recently
+  // created valid session for this user and invalidate it.
+  // The global "revoke all" was an unintended side-effect that
+  // logged the user out of every device.
+  const currentSession =
+    await prisma.session.findFirst({
       where: {
         userId,
         isValid: true,
       },
-
-      data: {
-        isValid: false,
+      orderBy: {
+        createdAt: 'desc',
       },
+      select: { id: true },
     });
+
+  if (currentSession) {
+    await prisma.session.update({
+      where: { id: currentSession.id },
+      data: { isValid: false },
+    });
+  }
 
   await invalidateUserCaches(
     userId
@@ -578,7 +614,7 @@ async function forgotPassword(
     .create({
       data: {
         userId: user.id,
-        token: resetToken,
+        token: hashToken(resetToken),
         expiresAt,
       },
     });
@@ -618,7 +654,7 @@ async function resetPassword(
       .passwordResetToken
       .findUnique({
         where: {
-          token,
+          token: hashToken(token),
         },
       });
 

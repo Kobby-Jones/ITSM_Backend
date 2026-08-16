@@ -114,7 +114,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-itsm_user}:${DB_PASSWORD:-itsm_password}@postgres:5432/${DB_NAME:-itsm_db}?schema=public
     command: >
-      sh -c "npx prisma migrate deploy && node prisma/seed.js"
+      sh -c "npx prisma migrate deploy"
     networks:
       - itsm_network
     restart: "no"

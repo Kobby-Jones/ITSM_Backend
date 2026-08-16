@@ -122,7 +122,7 @@ async function scheduleSLAChecks() {
       await slaQueue.removeRepeatableByKey(job.key);
     }
     await slaQueue.add('sla-check', {}, {
-      repeat: { cron: process.env.SLA_CHECK_INTERVAL || '*/5 * * * *' },
+      repeat: { cron: process.env.SLA_CHECK_INTERVAL || '*/15 * * * *' },
       removeOnComplete: 10,
       removeOnFail: 5,
     });
