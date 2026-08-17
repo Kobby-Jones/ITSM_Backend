@@ -22,9 +22,13 @@ router.use(authenticate);
  *     summary: Get dashboard KPIs
  *     tags: [Analytics]
  */
-router.get('/dashboard', async (req, res) => {
-  const kpis = await analyticsService.getDashboardKPIs(req.user.id, req.user.role?.name);
-  ApiResponse.success(res, { data: kpis });
+router.get('/dashboard', async (req, res, next) => {
+  try {
+    const kpis = await analyticsService.getDashboardKPIs(req.user.id, req.user.role?.name);
+    ApiResponse.success(res, { data: kpis });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**
