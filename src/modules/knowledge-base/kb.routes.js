@@ -96,7 +96,7 @@ const listArticlesSchema = Joi.object({
   limit: Joi.number()
     .integer()
     .min(1)
-    .max(100),
+    .max(200),
 
   search: Joi.string()
     .trim()

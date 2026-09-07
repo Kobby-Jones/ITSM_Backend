@@ -38,3 +38,6 @@ Thumbs.db
 # Test artifacts
 junit.xml
 test-results/
+# Let's Encrypt / Certbot certificates
+certbot/conf/
+certbot/www/
