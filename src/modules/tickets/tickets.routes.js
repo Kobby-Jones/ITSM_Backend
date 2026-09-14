@@ -124,6 +124,35 @@ router.post(
       urgency: Joi.string()
         .max(500)
         .allow('', null),
+
+      // Optional device snapshot captured by the Flutter client at the
+      // moment the ticket is created. It is ingested into telemetry_logs by
+      // tickets.service.js and linked back to this ticket in metadata.
+      telemetry: Joi.object({
+        deviceId: Joi.string().max(200).allow(null),
+        platform: Joi.string()
+          .valid('android', 'windows', 'linux', 'ios', 'macos', 'web')
+          .allow(null),
+        deviceModel: Joi.string().max(200).allow(null),
+        osVersion: Joi.string().max(100).allow(null),
+        appVersion: Joi.string().max(50).allow(null),
+        ramTotal: Joi.number().integer().positive().allow(null),
+        ramAvailable: Joi.number().integer().min(0).allow(null),
+        cpuUsage: Joi.number().min(0).max(100).allow(null),
+        batteryLevel: Joi.number().min(0).max(100).allow(null),
+        storageTotal: Joi.number().integer().positive().allow(null),
+        storageAvailable: Joi.number().integer().min(0).allow(null),
+        networkStatus: Joi.string()
+          .valid('online', 'offline', 'limited')
+          .allow(null),
+        networkType: Joi.string()
+          .valid('wifi', 'cellular', 'ethernet', 'unknown')
+          .allow(null),
+        crashLogs: Joi.object().allow(null),
+        errorLogs: Joi.array().items(Joi.object()).allow(null),
+        metadata: Joi.object().allow(null),
+        recordedAt: Joi.date().iso().allow(null),
+      }).allow(null),
     })
   ),
 

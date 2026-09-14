@@ -25,6 +25,9 @@ const {
 const routingEngine =
   require('../routing/routing.service');
 
+const telemetryService =
+  require('../telemetry/telemetry.service');
+
 const notificationService =
   require('../notifications/notifications.service');
 
@@ -111,6 +114,7 @@ async function createTicket(data, creatorId) {
     departmentId,
     impact,
     urgency,
+    telemetry,
   } = data;
 
   if (offlineId) {
@@ -118,11 +122,24 @@ async function createTicket(data, creatorId) {
       where: {
         offlineId,
       },
+      include: TICKET_INCLUDE,
     });
 
     if (existing) {
       return existing;
     }
+  }
+
+  // If the client did not explicitly choose a department, inherit the
+  // requester's department. This gives department-based routing and the
+  // workload fallback useful context without trusting a client guess.
+  let effectiveDepartmentId = departmentId || null;
+  if (!effectiveDepartmentId) {
+    const creator = await prisma.user.findUnique({
+      where: { id: creatorId },
+      select: { departmentId: true },
+    });
+    effectiveDepartmentId = creator?.departmentId || null;
   }
 
   const ticketNumber = generateTicketNumber();
@@ -143,7 +160,7 @@ async function createTicket(data, creatorId) {
         priority,
         tags,
         offlineId,
-        departmentId,
+        departmentId: effectiveDepartmentId,
         impact,
         urgency,
         creatorId,
@@ -166,19 +183,52 @@ async function createTicket(data, creatorId) {
     return created;
   });
 
-  routingEngine
-    .autoRouteTicket(ticket)
-    .catch(error => {
-      logger.error(
-        'Auto-routing error:',
-        error.message
+  // Persist incident-time telemetry before returning the ticket. Telemetry
+  // failure never destroys an otherwise valid ticket, but it is surfaced in
+  // the response and logs so the client/defence test can verify capture.
+  let telemetryCaptured = false;
+  let telemetryDeviceId = null;
+  if (telemetry) {
+    try {
+      telemetryDeviceId = telemetry.deviceId || null;
+      await telemetryService.ingestTelemetry(
+        {
+          ...telemetry,
+          metadata: {
+            ...(telemetry.metadata || {}),
+            source: 'ticket_creation',
+            ticketId: ticket.id,
+            ticketNumber: ticket.ticketNumber,
+            offlineId: offlineId || null,
+          },
+        },
+        creatorId
       );
-    });
+      telemetryCaptured = true;
+    } catch (error) {
+      logger.error(
+        `Telemetry capture failed for ticket ${ticket.id}: ${error.message}`
+      );
+    }
+  }
+
+  // Await routing so the create-ticket response already contains the actual
+  // assignment. This makes auto-routing deterministic and visible to the UI.
+  const routingResult =
+    await routingEngine.autoRouteTicket(ticket);
+
+  let finalTicket = ticket;
+  if (routingResult?.routed) {
+    finalTicket = await prisma.ticket.findUnique({
+      where: { id: ticket.id },
+      include: TICKET_INCLUDE,
+    }) || ticket;
+  }
 
   notificationService
     .sendTicketNotification(
       'TICKET_CREATED',
-      ticket,
+      finalTicket,
       creatorId
     )
     .catch(() => {});
@@ -187,7 +237,12 @@ async function createTicket(data, creatorId) {
     `Ticket created: ${ticketNumber} by ${creatorId}`
   );
 
-  return ticket;
+  return {
+    ...finalTicket,
+    deviceId: telemetryDeviceId,
+    telemetryCaptured,
+    autoRouting: routingResult,
+  };
 }
 
 async function getTickets(
