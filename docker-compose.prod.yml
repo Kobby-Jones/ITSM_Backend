@@ -80,15 +80,6 @@ services:
       ALLOWED_ORIGINS: https://${DOMAIN},http://${DOMAIN}
       UPLOAD_DIR: /app/uploads
       MAX_FILE_SIZE: ${MAX_FILE_SIZE:-10485760}
-      # Rate limiting. For a controlled local defense demo only, set
-      # RATE_LIMIT_DISABLED=true in the host .env, then recreate the api container.
-      RATE_LIMIT_DISABLED: ${RATE_LIMIT_DISABLED:-false}
-      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
-      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
-      AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
-      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-10}
-      STRICT_RATE_LIMIT_WINDOW_MS: ${STRICT_RATE_LIMIT_WINDOW_MS:-60000}
-      STRICT_RATE_LIMIT_MAX: ${STRICT_RATE_LIMIT_MAX:-5}
       TRUST_PROXY: "1"
       SLA_CHECK_INTERVAL: "*/15 * * * *"
     volumes:

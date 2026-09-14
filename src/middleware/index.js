@@ -1,36 +1,28 @@
 // src/middleware/rateLimiter.middleware.js
 const rateLimit = require('express-rate-limit');
 
-// Presentation/demo escape hatch. Keep this FALSE in any public deployment.
-// Set RATE_LIMIT_DISABLED=true only for a controlled local/offline defense demo.
-const rateLimitDisabled =
-  String(process.env.RATE_LIMIT_DISABLED || 'false').toLowerCase() === 'true';
-
-const commonOptions = {
+const defaultLimiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => rateLimitDisabled,
-};
-
-const defaultLimiter = rateLimit({
-  ...commonOptions,
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100,
   message: { success: false, message: 'Too many requests, please try again later.', errors: [] },
 });
 
 const authLimiter = rateLimit({
-  ...commonOptions,
-  windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
-  max: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 10,
+  windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.AUTH_RATE_LIMIT_MAX) || 10,
+  standardHeaders: true,
+  legacyHeaders: false,
   skipSuccessfulRequests: true,
   message: { success: false, message: 'Too many authentication attempts.', errors: [] },
 });
 
 const strictLimiter = rateLimit({
-  ...commonOptions,
-  windowMs: parseInt(process.env.STRICT_RATE_LIMIT_WINDOW_MS, 10) || 60 * 1000,
-  max: parseInt(process.env.STRICT_RATE_LIMIT_MAX, 10) || 5,
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { success: false, message: 'Rate limit exceeded.', errors: [] },
 });
 
