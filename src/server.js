@@ -258,6 +258,47 @@ app.get(
   }
 );
 
+// Check if the application is ready to serve requests
+app.get(
+  '/health/ready',
+  async (req, res) => {
+    const {
+      prisma,
+    } = require('./config/database');
+
+    let databaseStatus = 'ok';
+    let redisStatus = 'ok';
+
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+    } catch {
+      databaseStatus = 'error';
+    }
+
+    try {
+      const redis = getRedisClient();
+      await redis.ping();
+    } catch {
+      redisStatus = 'error';
+    }
+
+    const ready =
+      databaseStatus === 'ok' &&
+      redisStatus === 'ok';
+
+    res
+      .status(ready ? 200 : 503)
+      .json({
+        status: ready ? 'ready' : 'not_ready',
+        timestamp: new Date().toISOString(),
+        services: {
+          database: databaseStatus,
+          redis: redisStatus,
+        },
+      });
+  }
+);
+
 app.get(
   '/metrics',
   (req, res) => {

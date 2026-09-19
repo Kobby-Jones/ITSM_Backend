@@ -1,7 +1,7 @@
 # ============================================================
 # Stage 1: Dependencies
 # ============================================================
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ RUN npm ci --only=production && \
 # ============================================================
 # Stage 2: Production image
 # ============================================================
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 
 WORKDIR /app
 
@@ -26,20 +26,24 @@ RUN apk add --no-cache dumb-init openssl
 ENV NODE_ENV=production
 
 # Create non-root user
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nodeapp
+RUN addgroup -S -g 1001 nodejs && \
+    adduser -S -D -H -u 1001 -G nodejs nodeapp
 
-# Copy built dependencies
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/prisma ./prisma
+# Copy dependencies and Prisma client from the deps stage
+COPY --from=deps --chown=nodeapp:nodejs /app/node_modules ./node_modules
+COPY --from=deps --chown=nodeapp:nodejs /app/prisma ./prisma
 
-# Copy source
-COPY src ./src
-COPY package*.json ./
+# Copy application source code
+COPY --chown=nodeapp:nodejs src ./src
+COPY --chown=nodeapp:nodejs package*.json ./
 
 # Create uploads directory
-RUN mkdir -p uploads/tickets uploads/knowledge uploads/assets uploads/avatars && \
-    chown -R nodeapp:nodejs /app
+RUN mkdir -p \
+    uploads/tickets \
+    uploads/knowledge \
+    uploads/assets \
+    uploads/avatars && \
+    chown -R nodeapp:nodejs uploads
 
 USER nodeapp
 
