@@ -253,7 +253,7 @@ searchRouter.get(
     }
 
     const {
-      page,
+      // page,
       limit,
       skip,
     } = getPagination(req.query);

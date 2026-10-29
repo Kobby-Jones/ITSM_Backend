@@ -31,7 +31,7 @@ module.exports = { defaultLimiter, authLimiter, strictLimiter };
 // ============================================================
 // src/middleware/validate.middleware.js
 // ============================================================
-const Joi = require('joi');
+// const Joi = require('joi');
 const { ValidationError } = require('../shared/errors');
 
 function validate(schema, source = 'body') {

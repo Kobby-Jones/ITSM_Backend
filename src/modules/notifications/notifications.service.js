@@ -3,7 +3,7 @@ const { prisma } = require('../../config/database');
 const { sendPushNotification } = require('../../config/firebase');
 const { sendEmail, getEmailTemplate } = require('../../config/email');
 const { getPagination } = require('../../utils/helpers');
-const logger = require('../../config/logger');
+// const logger = require('../../config/logger');
 
 async function createNotification({ userId, type, title, message, data = {}, ticketId, channel = 'IN_APP' }) {
   return prisma.notification.create({

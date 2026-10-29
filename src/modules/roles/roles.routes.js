@@ -114,7 +114,7 @@ router.get('/permissions/all', authorize(PERMISSIONS.SYSTEM_CONFIG), async (req,
 // src/modules/audit/audit.routes.js
 // ============================================================
 const auditRouter = express.Router();
-const auditAuth = require('../../middleware/auth.middleware');
+// const auditAuth = require('../../middleware/auth.middleware');
 
 /**
  * @swagger

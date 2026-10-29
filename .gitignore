@@ -41,3 +41,14 @@ test-results/
 # Let's Encrypt / Certbot certificates
 certbot/conf/
 certbot/www/
+
+
+
+# Private deployment configuration
+.env.*
+!.env.example
+
+# Local security audit artifacts
+itsm.zip
+itsm-api.sbom.json
+trivy-audit-after.json

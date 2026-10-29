@@ -1,6 +1,6 @@
 // src/middleware/error.middleware.js
 const logger = require('../config/logger');
-const { AppError } = require('../shared/errors');
+// const { AppError } = require('../shared/errors');
 
 function errorHandler(err, req, res, next) {
   let statusCode = err.statusCode || 500;

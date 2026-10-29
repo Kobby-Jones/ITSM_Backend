@@ -1,6 +1,6 @@
 // src/modules/sla/sla.service.js
 const { prisma } = require('../../config/database');
-const { addMinutes, minutesDiff, formatDuration } = require('../../utils/helpers');
+const { minutesDiff} = require('../../utils/helpers');
 const notificationService = require('../notifications/notifications.service');
 const logger = require('../../config/logger');
 
