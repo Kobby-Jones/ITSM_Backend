@@ -114,7 +114,7 @@ app.use(
     origin: (origin, callback) => {
       const allowedOrigins = (
         process.env.ALLOWED_ORIGINS
-        || 'http://localhost:3000'
+        || 'https://itsm-web.web.app/,https://itsm-web.firebaseapp.com'
       )
         .split(',')
         .map(value => value.trim())
